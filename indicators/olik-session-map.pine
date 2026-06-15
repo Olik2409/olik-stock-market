@@ -354,6 +354,8 @@ f_level(bool _show, float _val, color _col, string _style, int _width, string _t
         if _showLbl
             if na(lb)
                 lb := label.new(bar_index, _val, _txt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(color.black, 100), textcolor = _txtCol, size = size.small)
+                // ostatnia instrukcja gałęzi musi zwracac void (zgodnosc typow if/else - CE10235)
+                label.set_xy(lb, bar_index, _val)
             else
                 label.set_xy(lb, bar_index, _val)
                 label.set_text(lb, _txt)
