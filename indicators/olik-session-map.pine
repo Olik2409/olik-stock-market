@@ -287,6 +287,7 @@ type SessionDraw
     string name    = ""        // etykieta sesji (do labeli i alertow)
     float  hVal    = na        // poziom session high
     float  lVal    = na        // poziom session low
+    color  hlCol   = na        // kolor linii H/L (Pine nie ma line.get_color)
     bool   hBroken = false     // czy high juz przebity (linia ucieta)
     bool   lBroken = false     // czy low juz przebity
 
@@ -395,6 +396,7 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
             if _showHL and not na(curDraw)
                 curDraw.hVal := sHigh
                 curDraw.lVal := sLow
+                curDraw.hlCol := _hlCol
                 curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, extend = (_extendInf ? extend.right : extend.none), color = _hlCol, style = _hlStyle, width = _hlWidth)
                 curDraw.hlL := line.new(loBar, sLow,  bar_index, sLow,  xloc = xloc.bar_index, extend = (_extendInf ? extend.right : extend.none), color = _hlCol, style = _hlStyle, width = _hlWidth)
                 // czysty tekst bez ramki (label.style_none) - jak "Asia High" na screenach
@@ -429,7 +431,7 @@ f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _l
                 if _untilBreak and high > sd.hVal
                     sd.hBroken := true
                     if _sweep
-                        sd.swH := label.new(bar_index, sd.hVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = line.get_color(sd.hlH), size = size.small)
+                        sd.swH := label.new(bar_index, sd.hVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
                     if _alertBreak
                         alert("OLIK | SWEEP " + sd.name + " HIGH " + str.tostring(sd.hVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
             // --- LOW ---
@@ -440,7 +442,7 @@ f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _l
                 if _untilBreak and low < sd.lVal
                     sd.lBroken := true
                     if _sweep
-                        sd.swL := label.new(bar_index, sd.lVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = line.get_color(sd.hlL), size = size.small)
+                        sd.swL := label.new(bar_index, sd.lVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
                     if _alertBreak
                         alert("OLIK | SWEEP " + sd.name + " LOW " + str.tostring(sd.lVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
 
