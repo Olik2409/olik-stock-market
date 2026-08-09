@@ -147,6 +147,8 @@ showNameLabel  = input.bool(true,  "Label z nazwa (np. AZJA High)",     group = 
 showPriceLabel = input.bool(false, "Dodaj cene do labela",              group = g_hl)
 hlLabelPosIn   = input.string("srodek", "Pozycja labela", options = ["srodek", "koniec"], group = g_hl)
 hlLabelSizeIn  = input.string("small", "Rozmiar labela", options = ["tiny", "small", "normal"], group = g_hl)
+liveHL         = input.bool(true,  "H/L trwajacej sesji (live)",        group = g_hl, tooltip = "Rysuje high/low sesji juz W TRAKCIE jej trwania i aktualizuje co swiece. Dzieki temu np. o 09:30 (start EU) widzisz biezacy H/L wciaz trwajacej AZJI, a o 15:30 (start USA) biezacy H/L trwajacego EU. Po zamknieciu sesji linia przelacza sie na styl finalny.")
+liveStyleIn    = input.string("dotted", "Styl linii live", options = ["solid", "dashed", "dotted"], group = g_hl, tooltip = "Osobny styl dla sesji jeszcze trwajacej - odrozniasz poziom 'w budowie' od domknietego.")
 sweepMark      = input.bool(true,  "Znacznik przebicia (sweep)",        group = g_hl, tooltip = "Rysuje mala 'x' na swiecy, ktora przebila session high/low - szybki odczyt: poziom zdjety.")
 hlStyleIn      = input.string("solid", "Styl linii H/L", options = ["solid", "dashed", "dotted"], group = g_hl)
 hlWidth        = input.int(1,      "Grubosc linii H/L", minval = 1, maxval = 5, group = g_hl)
@@ -230,6 +232,7 @@ doStyle       = f_lineStyle(doStyleIn)
 adrStyle      = f_lineStyle(adrStyleIn)
 panelTxtSize  = f_txtSize(panelSizeIn)
 hlLabelSize   = f_txtSize(hlLabelSizeIn)
+liveStyle     = f_lineStyle(liveStyleIn)
 // Tryby prowadzenia linii H/L (z inputa hlExtendModeIn)
 hlExtendInf   = hlExtendModeIn == "w prawo (infinite)"
 hlUntilBreak  = hlExtendModeIn == "do przebicia"
@@ -288,6 +291,8 @@ type SessionDraw
     float  hVal    = na        // poziom session high
     float  lVal    = na        // poziom session low
     color  hlCol   = na        // kolor linii H/L (Pine nie ma line.get_color)
+    bool   live    = false     // sesja wciaz trwa - H/L aktualizowany co bar, bez detekcji sweep
+    bool   dead    = false     // usunieta przez limit N - nie rysujemy jej juz niczego
     bool   hBroken = false     // czy high juz przebity (linia ucieta)
     bool   lBroken = false     // czy low juz przebity
 
@@ -317,15 +322,44 @@ f_capSessions(array<SessionDraw> reg, int n) =>
             label.delete(sd.swH)
         if not na(sd.swL)
             label.delete(sd.swL)
+        // zerujemy referencje - jesli usunieta sesja wciaz trwala, guardy na(...)
+        // zatrzymaja probe aktualizacji skasowanych obiektow
+        sd.bx  := na
+        sd.hlH := na
+        sd.hlL := na
+        sd.lbH := na
+        sd.lbL := na
+        sd.live := false
+        sd.dead := true
+
+// Buduje tekst labela H/L, np. "AZJA High" (+ opcjonalnie cena)
+f_hlText(bool _showName, bool _showPrice, string _lbl, string _side, float _v) =>
+    (_showName ? _lbl + " " + _side : "") + (_showPrice ? (_showName ? "  " : "") + str.tostring(_v, format.mintick) : "")
+
+// Ustawia linie i labele H/L na biezace ekstrema sesji.
+// Uzywane zarowno co bar dla sesji TRWAJACEJ (live), jak i przy jej finalizacji.
+// Kotwica (x1) siedzi na swiecy ekstremum, x2 idzie za biezaca swieca.
+f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lbl, bool _showName, bool _showPrice, string _lblPos) =>
+    if not na(_sd.hlH)
+        line.set_xy1(_sd.hlH, _hiBar, _h)
+        line.set_xy2(_sd.hlH, bar_index, _h)
+    if not na(_sd.hlL)
+        line.set_xy1(_sd.hlL, _loBar, _l)
+        line.set_xy2(_sd.hlL, bar_index, _l)
+    if not na(_sd.lbH)
+        label.set_xy(_sd.lbH, _lblPos == "srodek" ? int(math.avg(_hiBar, bar_index)) : bar_index, _h)
+        label.set_text(_sd.lbH, f_hlText(_showName, _showPrice, _lbl, "High", _h))
+    if not na(_sd.lbL)
+        label.set_xy(_sd.lbL, _lblPos == "srodek" ? int(math.avg(_loBar, bar_index)) : bar_index, _l)
+        label.set_text(_sd.lbL, f_hlText(_showName, _showPrice, _lbl, "Low", _l))
 
 // =============================================================================
 // FUNKCJA: BOX SESJI + running high/low + H/L rays + auto-anchored open/close
 // Zwraca [lastRange, avgRange, activeNow] na potrzeby panelu.
 // Obiekty rysunkowe trafiaja do WSPOLNEGO rejestru _reg -> globalny limit N sesji.
 // =============================================================================
-f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, int _transp, bool _showBox, bool _showHL, color _hlCol, string _hlStyle, int _hlWidth, int _keepN, bool _extendInf, bool _showName, bool _showPriceLbl, string _lblPos, string _lblSize, bool _autoAnchor, color _aaCol, string _aaStyle, int _aaWidth, bool _aaLabel, array<SessionDraw> _reg) =>
+f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, int _transp, bool _showBox, bool _showHL, color _hlCol, string _hlStyle, int _hlWidth, int _keepN, bool _extendInf, bool _showName, bool _showPriceLbl, string _lblPos, string _lblSize, bool _liveHL, string _liveStyle, bool _autoAnchor, color _aaCol, string _aaStyle, int _aaWidth, bool _aaLabel, array<SessionDraw> _reg) =>
     var array<float> ranges   = array.new<float>()
-    var box   curBox    = na
     var float sHigh     = na
     var float sLow      = na
     var int   hiBar     = na   // swieca, ktora zrobila session high (kotwica linii H)
@@ -349,12 +383,20 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
             sLow  := low
             hiBar := bar_index
             loBar := bar_index
-            curDraw := SessionDraw.new(name = _lbl)
+            curDraw := SessionDraw.new(name = _lbl, hlCol = _hlCol)
             if _showBox
-                curBox := box.new(bar_index, sHigh, bar_index, sLow, border_color = color.new(_boxCol, 30), bgcolor = color.new(_boxCol, _transp))
-                curDraw.bx := curBox
-            else
-                curBox := na
+                curDraw.bx := box.new(bar_index, sHigh, bar_index, sLow, border_color = color.new(_boxCol, 30), bgcolor = color.new(_boxCol, _transp))
+            // LIVE H/L: linie i labele powstaja juz na starcie sesji i sa aktualizowane
+            // co bar - dzieki temu w trakcie EU widac biezacy H/L wciaz trwajacej AZJI.
+            if _showHL and _liveHL
+                curDraw.live := true
+                curDraw.hVal := sHigh
+                curDraw.lVal := sLow
+                curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, color = _hlCol, style = _liveStyle, width = _hlWidth)
+                curDraw.hlL := line.new(loBar, sLow,  bar_index, sLow,  xloc = xloc.bar_index, color = _hlCol, style = _liveStyle, width = _hlWidth)
+                if _showName or _showPriceLbl
+                    curDraw.lbH := label.new(bar_index, sHigh, f_hlText(_showName, _showPriceLbl, _lbl, "High", sHigh), xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                    curDraw.lbL := label.new(bar_index, sLow,  f_hlText(_showName, _showPriceLbl, _lbl, "Low",  sLow),  xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
             // auto-anchored OPEN (pionowa linia na pierwszym barze sesji)
             if _autoAnchor
                 curDraw.aaO := line.new(bar_index, low, bar_index, high, xloc = xloc.bar_index, extend = extend.both, color = _aaCol, style = _aaStyle, width = _aaWidth)
@@ -377,10 +419,16 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
                 if low < sLow
                     sLow  := low
                     loBar := bar_index
-            if not na(curBox)
-                box.set_top(curBox, sHigh)
-                box.set_bottom(curBox, sLow)
-                box.set_right(curBox, bar_index)
+            if not na(curDraw) and not curDraw.dead
+                if not na(curDraw.bx)
+                    box.set_top(curDraw.bx, sHigh)
+                    box.set_bottom(curDraw.bx, sLow)
+                    box.set_right(curDraw.bx, bar_index)
+                // sesja trwa -> ciagniemy H/L za biezaca swieca (live)
+                if curDraw.live
+                    curDraw.hVal := sHigh
+                    curDraw.lVal := sLow
+                    f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos)
             lastRange := sHigh - sLow
 
         if isEnded and not na(sHigh)
@@ -393,22 +441,32 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
             // Linie H/L kotwiczone w SWIECY EKSTREMUM (jak na mapach liquidity):
             // startuja tam, gdzie faktycznie powstal high/low, prowadzone w prawo
             // przez f_updateHL (do przebicia / do biezacej swiecy / infinite).
-            if _showHL and not na(curDraw)
+            if _showHL and not na(curDraw) and not curDraw.dead
                 curDraw.hVal := sHigh
                 curDraw.lVal := sLow
                 curDraw.hlCol := _hlCol
-                curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, extend = (_extendInf ? extend.right : extend.none), color = _hlCol, style = _hlStyle, width = _hlWidth)
-                curDraw.hlL := line.new(loBar, sLow,  bar_index, sLow,  xloc = xloc.bar_index, extend = (_extendInf ? extend.right : extend.none), color = _hlCol, style = _hlStyle, width = _hlWidth)
+                // linie/labele istnieja juz, gdy sesja szla w trybie live; przy live OFF
+                // tworzymy je dopiero teraz (osobne "if" bez else - brak konfliktu typow)
+                if na(curDraw.hlH)
+                    curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
+                if na(curDraw.hlL)
+                    curDraw.hlL := line.new(loBar, sLow, bar_index, sLow, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
                 // czysty tekst bez ramki (label.style_none) - jak "Asia High" na screenach
-                if _showName or _showPriceLbl
-                    txtH = (_showName ? _lbl + " High" : "") + (_showPriceLbl ? (_showName ? "  " : "") + str.tostring(sHigh, format.mintick) : "")
-                    txtL = (_showName ? _lbl + " Low"  : "") + (_showPriceLbl ? (_showName ? "  " : "") + str.tostring(sLow,  format.mintick) : "")
-                    lxH = _lblPos == "srodek" ? int(math.avg(hiBar, bar_index)) : bar_index
-                    lxL = _lblPos == "srodek" ? int(math.avg(loBar, bar_index)) : bar_index
-                    curDraw.lbH := label.new(lxH, sHigh, txtH, xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
-                    curDraw.lbL := label.new(lxL, sLow,  txtL, xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                if (_showName or _showPriceLbl) and na(curDraw.lbH)
+                    curDraw.lbH := label.new(bar_index, sHigh, "", xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                if (_showName or _showPriceLbl) and na(curDraw.lbL)
+                    curDraw.lbL := label.new(bar_index, sLow, "", xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                // sesja domknieta: styl finalny (zamiast 'live') + ostateczna pozycja
+                line.set_style(curDraw.hlH, _hlStyle)
+                line.set_style(curDraw.hlL, _hlStyle)
+                f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos)
+                if _extendInf
+                    line.set_extend(curDraw.hlH, extend.right)
+                    line.set_extend(curDraw.hlL, extend.right)
+                // od teraz poziom jest "gotowy" - moze byc prowadzony i sweepowany
+                curDraw.live := false
             // auto-anchored CLOSE (pionowa linia na ostatnim barze sesji)
-            if _autoAnchor and not na(curDraw)
+            if _autoAnchor and not na(curDraw) and not curDraw.dead
                 curDraw.aaC := line.new(bar_index[1], low[1], bar_index[1], high[1], xloc = xloc.bar_index, extend = extend.both, color = _aaCol, style = _aaStyle, width = _aaWidth)
                 if _aaLabel
                     curDraw.lbC := label.new(bar_index[1], high[1], _lbl + " CLOSE", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(_aaCol, 70), textcolor = _aaCol, size = size.tiny)
@@ -423,28 +481,31 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
 f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _lblPos, bool _sweep, bool _alertBreak) =>
     if _untilBreak or _toCurrent
         for sd in _reg
-            // --- HIGH ---
-            if not na(sd.hlH) and not sd.hBroken
-                line.set_x2(sd.hlH, bar_index)
-                if not na(sd.lbH)
-                    label.set_x(sd.lbH, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlH), bar_index)) : bar_index)
-                if _untilBreak and high > sd.hVal
-                    sd.hBroken := true
-                    if _sweep
-                        sd.swH := label.new(bar_index, sd.hVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
-                    if _alertBreak
-                        alert("OLIK | SWEEP " + sd.name + " HIGH " + str.tostring(sd.hVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
-            // --- LOW ---
-            if not na(sd.hlL) and not sd.lBroken
-                line.set_x2(sd.hlL, bar_index)
-                if not na(sd.lbL)
-                    label.set_x(sd.lbL, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlL), bar_index)) : bar_index)
-                if _untilBreak and low < sd.lVal
-                    sd.lBroken := true
-                    if _sweep
-                        sd.swL := label.new(bar_index, sd.lVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
-                    if _alertBreak
-                        alert("OLIK | SWEEP " + sd.name + " LOW " + str.tostring(sd.lVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
+            // sesje TRWAJACE pomijamy - ich H/L prowadzi f_sessionBox (live), a wlasne
+            // nowe ekstremum sesji nie jest przebiciem, wiec sweep liczymy dopiero po jej domknieciu
+            if not sd.live
+                // --- HIGH ---
+                if not na(sd.hlH) and not sd.hBroken
+                    line.set_x2(sd.hlH, bar_index)
+                    if not na(sd.lbH)
+                        label.set_x(sd.lbH, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlH), bar_index)) : bar_index)
+                    if _untilBreak and high > sd.hVal
+                        sd.hBroken := true
+                        if _sweep
+                            sd.swH := label.new(bar_index, sd.hVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
+                        if _alertBreak
+                            alert("OLIK | SWEEP " + sd.name + " HIGH " + str.tostring(sd.hVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
+                // --- LOW ---
+                if not na(sd.hlL) and not sd.lBroken
+                    line.set_x2(sd.hlL, bar_index)
+                    if not na(sd.lbL)
+                        label.set_x(sd.lbL, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlL), bar_index)) : bar_index)
+                    if _untilBreak and low < sd.lVal
+                        sd.lBroken := true
+                        if _sweep
+                            sd.swL := label.new(bar_index, sd.lVal, "x", xloc = xloc.bar_index, style = label.style_none, textcolor = sd.hlCol, size = size.small)
+                        if _alertBreak
+                            alert("OLIK | SWEEP " + sd.name + " LOW " + str.tostring(sd.lVal, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar)
 
 // =============================================================================
 // FUNKCJA: poziom referencyjny (PDH/PDL/PDC/WO/ADR proj.)
@@ -552,17 +613,17 @@ var array<SessionDraw> g_sessions = array.new<SessionDraw>()
 
 if intraday
     // --- Boxy sesji + globalny limit ostatnich N sesji ---
-    [azR, azA, azAc] = f_sessionBox(showAzja, sessAzja, tz, lblAzja, colAzja, transpAzja, showBoxes, masterHL and hlAzja, hlColAzja, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [azR, azA, azAc] = f_sessionBox(showAzja, sessAzja, tz, lblAzja, colAzja, transpAzja, showBoxes, masterHL and hlAzja, hlColAzja, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     azAct := azAc
-    [euR, euA, euAc] = f_sessionBox(showEU, sessEU, tz, lblEU, colEU, transpEU, showBoxes, masterHL and hlEU, hlColEU, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [euR, euA, euAc] = f_sessionBox(showEU, sessEU, tz, lblEU, colEU, transpEU, showBoxes, masterHL and hlEU, hlColEU, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     euRangeV := euR
     euAvgV   := euA
     euAct    := euAc
-    [usR, usA, usAc] = f_sessionBox(showUSA, sessUSA, tz, lblUSA, colUSA, transpUSA, showBoxes, masterHL and hlUSA, hlColUSA, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [usR, usA, usAc] = f_sessionBox(showUSA, sessUSA, tz, lblUSA, colUSA, transpUSA, showBoxes, masterHL and hlUSA, hlColUSA, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     usRangeV := usR
     usAvgV   := usA
     usAct    := usAc
-    [gpwR, gpwA, gpwAc] = f_sessionBox(showGPW, sessGPW, tz, lblGPW, colGPW, transpGPW, showBoxes, masterHL and hlGPW, hlColGPW, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [gpwR, gpwA, gpwAc] = f_sessionBox(showGPW, sessGPW, tz, lblGPW, colGPW, transpGPW, showBoxes, masterHL and hlGPW, hlColGPW, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     gpwAct := gpwAc
 
     // --- Prowadzenie linii H/L w prawo + detekcja sweep (co bar, caly rejestr) ---
