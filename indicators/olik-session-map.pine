@@ -4,7 +4,11 @@
 // -----------------------------------------------------------------------------
 // Wskaznik mapuje sesje rynkowe (Azja / EU / USA / GPW), ich high/low,
 // kluczowe godziny, overlap LON-NY, okno makro US, poziomy referencyjne (PDH/
-// PDL/PDC, weekly open, ADR) oraz panel informacyjny w rogu.
+// PDL/PDC, DO/WO, PWH/PWL, PMH/PML, MO/YO, ADR) oraz panel informacyjny w rogu.
+//
+// DZIALA NA KAZDYM INTERWALE. Do granicy z inputa "Sesje rysuj do interwalu"
+// (default 1H) rysuje sesje; powyzej (H4/D1/W1/M1) przechodzi w tryb HTF -
+// same poziomy + panel, a zestaw poziomow dobiera sie automatycznie do interwalu.
 //
 // ZASADA NADRZEDNA: kazdy istotny parametr jest edytowalny w ustawieniach.
 // Wszystkie czasy liczone w jednej, globalnej strefie czasowej (input "tz",
@@ -509,7 +513,7 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
                     curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
                 if na(curDraw.hlL)
                     curDraw.hlL := line.new(loBar, sLow, bar_index, sLow, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
-                // czysty tekst bez ramki (label.style_none) - jak "Asia High" na screenach
+                // czysty tekst bez ramki, odsuniety nad/pod linie (patrz f_hlLabelStyle)
                 if (_showName or _showPriceLbl) and na(curDraw.lbH)
                     curDraw.lbH := label.new(bar_index, sHigh, "", xloc = xloc.bar_index, style = f_hlLabelStyle(_lblAbove, true),  color = color.new(color.black, 100), textcolor = _hlCol, size = _lblSize)
                 if (_showName or _showPriceLbl) and na(curDraw.lbL)
