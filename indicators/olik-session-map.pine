@@ -4,7 +4,11 @@
 // -----------------------------------------------------------------------------
 // Wskaznik mapuje sesje rynkowe (Azja / EU / USA / GPW), ich high/low,
 // kluczowe godziny, overlap LON-NY, okno makro US, poziomy referencyjne (PDH/
-// PDL/PDC, weekly open, ADR) oraz panel informacyjny w rogu.
+// PDL/PDC, DO/WO, PWH/PWL, PMH/PML, MO/YO, ADR) oraz panel informacyjny w rogu.
+//
+// DZIALA NA KAZDYM INTERWALE. Do granicy z inputa "Sesje rysuj do interwalu"
+// (default 1H) rysuje sesje; powyzej (H4/D1/W1/M1) przechodzi w tryb HTF -
+// same poziomy + panel, a zestaw poziomow dobiera sie automatycznie do interwalu.
 //
 // ZASADA NADRZEDNA: kazdy istotny parametr jest edytowalny w ustawieniach.
 // Wszystkie czasy liczone w jednej, globalnej strefie czasowej (input "tz",
@@ -23,6 +27,7 @@ indicator("OLIK Session Map", "OLIK SM", overlay = true, max_boxes_count = 500, 
 // GRUPY (group=) - nazwy uzywane w inputach
 // =============================================================================
 g_tz    = "Strefa czasowa"
+g_tf    = "Interwaly (zachowanie wskaznika)"
 g_sess  = "Sesje"
 g_hl    = "Session High/Low"
 g_keyh  = "Kluczowe godziny"
@@ -49,6 +54,23 @@ f_pos(string s) =>
 // Mapuje string rozmiaru tekstu na stala size.*
 f_txtSize(string s) =>
     s == "tiny" ? size.tiny : s == "normal" ? size.normal : size.small
+
+// Mapuje string interwalu na sekundy (granica rysowania sesji)
+f_tfSec(string s) =>
+    sec = s == "5m" ? 300 : s == "15m" ? 900 : s == "30m" ? 1800 : s == "1h" ? 3600 : s == "2h" ? 7200 : 14400
+    sec
+
+// Styl labela H/L: nad linia (High) / pod linia (Low) z przezroczystym tlem,
+// albo dokladnie na linii (style_none) - wtedy tekst przecina linia.
+f_hlLabelStyle(bool _above, bool _isHigh) =>
+    st = _above ? (_isHigh ? label.style_label_down : label.style_label_up) : label.style_none
+    st
+
+// Pozycja X labela H/L. Slot (0..3) rozsuwa labele roznych sesji w poziomie,
+// zeby nie nachodzily na siebie gdy maja podobny poziom ceny.
+f_lblX(int _anchorBar, int _endBar, string _pos, int _off, int _slot) =>
+    baseX = _pos == "srodek linii" ? int(math.avg(_anchorBar, _endBar)) : _pos == "start linii" ? _anchorBar : _endBar
+    baseX + _off * (1 + _slot)
 
 // Dopelnia liczbe do 2 cyfr (np. 9 -> "09")
 f_pad2(int v) =>
@@ -100,6 +122,10 @@ f_capBoxes(array<box> a, int n) =>
 // --- Strefa czasowa (globalna dla calego wskaznika) ---
 tz = input.string("Europe/Warsaw", "Strefa czasowa (globalna)", group = g_tz, tooltip = "Jedna strefa dla wszystkich sesji, linii i panelu. Defaulty godzin sa pod CEST (czas letni).")
 
+// --- Interwaly: gdzie wskaznik rysuje co ---
+maxSessTfIn    = input.string("1h", "Sesje rysuj do interwalu", options = ["5m", "15m", "30m", "1h", "2h", "4h"], group = g_tf, tooltip = "Powyzej tego interwalu sesje / overlap / okno makro / kluczowe godziny NIE sa rysowane - jedna swieca obejmowalaby kilka sesji, wiec box i tak bylby nieczytelny. Na H4/D1/W1/M1 wskaznik przelacza sie w tryb poziomow (HTF).")
+autoHideLevels = input.bool(true, "Auto-ukrywanie poziomow wg interwalu", group = g_tf, tooltip = "Na W1/M1 chowa poziomy dzienne (PDH/PDL/PDC/DO/ADR), na M1 dodatkowo tygodniowe (WO/PWH/PWL). Poziomy miesieczne i roczne zostaja. OFF = pokazuj wszystko, co wlaczone.")
+
 // --- Sesje: globalne ---
 showBoxes = input.bool(true, "Pokaz boxy sesji (tlo)", group = g_sess, tooltip = "OFF = czysty wykres w stylu 'liquidity lines' (tylko linie H/L jak na klasycznych setupach Livermore/ICT). Sesje sa nadal liczone - dziala panel, range i alerty.")
 
@@ -145,7 +171,9 @@ keepN          = input.int(3,      "Ostatnie N sesji (lacznie)",        minval =
 hlExtendModeIn = input.string("do przebicia", "Prowadzenie linii H/L", options = ["do przebicia", "do biezacej swiecy", "w prawo (infinite)"], group = g_hl, tooltip = "\"do przebicia\": linia startuje ze swiecy, ktora zrobila high/low sesji i ciagnie sie w prawo, az cena ja przebije - wtedy zostaje ucieta na swiecy przebicia (styl liquidity/Livermore, jak na klasycznych mapach sesji).")
 showNameLabel  = input.bool(true,  "Label z nazwa (np. AZJA High)",     group = g_hl)
 showPriceLabel = input.bool(false, "Dodaj cene do labela",              group = g_hl)
-hlLabelPosIn   = input.string("srodek", "Pozycja labela", options = ["srodek", "koniec"], group = g_hl)
+hlLabelPosIn   = input.string("koniec linii", "Pozycja labela", options = ["koniec linii", "srodek linii", "start linii"], group = g_hl, tooltip = "'koniec linii' = tekst przy aktualnym koncu poziomu (najmniej zaslania swiece).")
+hlLabelAbove   = input.bool(true,  "Label nad/pod linia (nie na niej)", group = g_hl, tooltip = "ON: 'AZJA High' siedzi NAD swoja linia, 'AZJA Low' POD nia - linia nie przecina tekstu. OFF: tekst dokladnie na linii (stare zachowanie).")
+hlLabelOffset  = input.int(2, "Odsuniecie labela (bary)", minval = 0, maxval = 50, group = g_hl, tooltip = "Odsuwa tekst w prawo od punktu zaczepienia. Kazda sesja dostaje inne odsuniecie (AZJA/EU/USA/GPW), wiec labele o podobnej cenie nie naskakuja na siebie.")
 hlLabelSizeIn  = input.string("small", "Rozmiar labela", options = ["tiny", "small", "normal"], group = g_hl)
 liveHL         = input.bool(true,  "H/L trwajacej sesji (live)",        group = g_hl, tooltip = "Rysuje high/low sesji juz W TRAKCIE jej trwania i aktualizuje co swiece. Dzieki temu np. o 09:30 (start EU) widzisz biezacy H/L wciaz trwajacej AZJI, a o 15:30 (start USA) biezacy H/L trwajacego EU. Po zamknieciu sesji linia przelacza sie na styl finalny.")
 liveStyleIn    = input.string("dotted", "Styl linii live", options = ["solid", "dashed", "dotted"], group = g_hl, tooltip = "Osobny styl dla sesji jeszcze trwajacej - odrozniasz poziom 'w budowie' od domknietego.")
@@ -197,8 +225,22 @@ adrProj    = input.bool(true,  "Projekcje (open +/- ADR)", group = g_ref)
 adrPctShow = input.bool(true,  "Pokaz % ADR skonsumowane (panel)", group = g_ref)
 adrCol     = input.color(#7E57C2, "ADR kolor proj.",   group = g_ref, inline = "adr2")
 adrStyleIn = input.string("dotted", "ADR styl", options = ["solid", "dashed", "dotted"], group = g_ref, inline = "adr2")
+// --- poziomy HTF (sens na H1/H4/D1/W1/M1) ---
+showPWH    = input.bool(true,  "PWH/PWL (prev week H/L)", group = g_ref, inline = "pw")
+pwCol      = input.color(#4DB6AC, "kolor",             group = g_ref, inline = "pw")
+pwStyleIn  = input.string("dashed", "styl", options = ["solid", "dashed", "dotted"], group = g_ref, inline = "pw")
+showPMH    = input.bool(true,  "PMH/PML (prev month H/L)", group = g_ref, inline = "pm")
+pmCol      = input.color(#FF8A65, "kolor",             group = g_ref, inline = "pm")
+pmStyleIn  = input.string("dashed", "styl", options = ["solid", "dashed", "dotted"], group = g_ref, inline = "pm")
+showMO     = input.bool(false, "Monthly open",         group = g_ref, inline = "mo")
+moCol      = input.color(#FFB74D, "kolor",             group = g_ref, inline = "mo")
+moStyleIn  = input.string("solid", "styl", options = ["solid", "dashed", "dotted"], group = g_ref, inline = "mo")
+showYO     = input.bool(false, "Yearly open",          group = g_ref, inline = "yo")
+yoCol      = input.color(#F06292, "kolor",             group = g_ref, inline = "yo")
+yoStyleIn  = input.string("solid", "styl", options = ["solid", "dashed", "dotted"], group = g_ref, inline = "yo")
 refWidth   = input.int(1, "Grubosc linii poziomow", minval = 1, maxval = 5, group = g_ref)
 showRefLabels = input.bool(true, "Labele poziomow", group = g_ref)
+refLabelOff   = input.int(3, "Odsuniecie labeli poziomow (bary)", minval = 0, maxval = 50, group = g_ref, tooltip = "Przesuwa opisy poziomow w prawo, w pusta przestrzen za ostatnia swieca - nie zaslaniaja price action.")
 
 // --- Panel ---
 showPanel    = input.bool(true, "Panel: pokaz",                         group = g_panel)
@@ -229,6 +271,10 @@ pdlStyle      = f_lineStyle(pdlStyleIn)
 pdcStyle      = f_lineStyle(pdcStyleIn)
 woStyle       = f_lineStyle(woStyleIn)
 doStyle       = f_lineStyle(doStyleIn)
+pwStyle       = f_lineStyle(pwStyleIn)
+pmStyle       = f_lineStyle(pmStyleIn)
+moStyle       = f_lineStyle(moStyleIn)
+yoStyle       = f_lineStyle(yoStyleIn)
 adrStyle      = f_lineStyle(adrStyleIn)
 panelTxtSize  = f_txtSize(panelSizeIn)
 hlLabelSize   = f_txtSize(hlLabelSizeIn)
@@ -241,9 +287,15 @@ hlToCurrent   = hlExtendModeIn == "do biezacej swiecy"
 // Wybor sesji dla Opening Range
 orSess = orSessSel == "Azja" ? sessAzja : orSessSel == "EU" ? sessEU : sessUSA
 
-// Czy interwal jest intraday (< 1D)? Sesje/overlap/makro/godziny rysujemy tylko
-// intraday; poziomy referencyjne i panel dzialaja na KAZDYM interwale (takze 1D/1W).
-intraday = timeframe.in_seconds() < 86400
+// --- Adaptacja do interwalu ---------------------------------------------------
+// Sesje maja sens tylko do pewnego interwalu (default 1H) - wyzej jedna swieca
+// obejmuje kilka sesji. Poziomy referencyjne i panel dzialaja na KAZDYM interwale;
+// zestaw poziomow dobiera sie automatycznie, zeby na W1/M1 nie bylo smietnika.
+tfSec    = timeframe.in_seconds()
+secDay   = 86400
+intraday = tfSec <= f_tfSec(maxSessTfIn)
+lvlDay   = not autoHideLevels or tfSec <= secDay        // PDH/PDL/PDC/DO/ADR - do D1
+lvlWeek  = not autoHideLevels or tfSec <= secDay * 7    // WO/PWH/PWL - do W1
 
 // =============================================================================
 // POZIOMY REFERENCYJNE - request.security (global scope)
@@ -255,6 +307,13 @@ pdc = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.loo
 // Weekly / daily open - wartosc ustalona na starcie okresu (lookahead_off, bez leak)
 wOpen = request.security(syminfo.tickerid, "W", open, lookahead = barmerge.lookahead_off)
 dOpen = request.security(syminfo.tickerid, "D", open, lookahead = barmerge.lookahead_off)
+// Poziomy HTF - prev week / prev month H/L + otwarcia miesiaca i roku
+pwh   = request.security(syminfo.tickerid, "W",   high[1], lookahead = barmerge.lookahead_on)
+pwl   = request.security(syminfo.tickerid, "W",   low[1],  lookahead = barmerge.lookahead_on)
+pmh   = request.security(syminfo.tickerid, "M",   high[1], lookahead = barmerge.lookahead_on)
+pml   = request.security(syminfo.tickerid, "M",   low[1],  lookahead = barmerge.lookahead_on)
+mOpen = request.security(syminfo.tickerid, "M",   open,    lookahead = barmerge.lookahead_off)
+yOpen = request.security(syminfo.tickerid, "12M", open,    lookahead = barmerge.lookahead_off)
 // ADR(N) - srednia z N zamknietych dni (high-low), [1] wyklucza dzien biezacy
 adr   = request.security(syminfo.tickerid, "D", ta.sma(high - low, adrLen)[1], lookahead = barmerge.lookahead_off)
 // Dzisiejszy range - akumulacja intraday bez leak
@@ -288,6 +347,7 @@ type SessionDraw
     label  swH = na            // znacznik sweep na przebiciu high
     label  swL = na            // znacznik sweep na przebiciu low
     string name    = ""        // etykieta sesji (do labeli i alertow)
+    int    slot    = 0         // 0..3 - rozsuwa labele roznych sesji w poziomie
     float  hVal    = na        // poziom session high
     float  lVal    = na        // poziom session low
     color  hlCol   = na        // kolor linii H/L (Pine nie ma line.get_color)
@@ -339,7 +399,7 @@ f_hlText(bool _showName, bool _showPrice, string _lbl, string _side, float _v) =
 // Ustawia linie i labele H/L na biezace ekstrema sesji.
 // Uzywane zarowno co bar dla sesji TRWAJACEJ (live), jak i przy jej finalizacji.
 // Kotwica (x1) siedzi na swiecy ekstremum, x2 idzie za biezaca swieca.
-f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lbl, bool _showName, bool _showPrice, string _lblPos) =>
+f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lbl, bool _showName, bool _showPrice, string _lblPos, int _lblOff) =>
     if not na(_sd.hlH)
         line.set_xy1(_sd.hlH, _hiBar, _h)
         line.set_xy2(_sd.hlH, bar_index, _h)
@@ -347,10 +407,10 @@ f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lb
         line.set_xy1(_sd.hlL, _loBar, _l)
         line.set_xy2(_sd.hlL, bar_index, _l)
     if not na(_sd.lbH)
-        label.set_xy(_sd.lbH, _lblPos == "srodek" ? int(math.avg(_hiBar, bar_index)) : bar_index, _h)
+        label.set_xy(_sd.lbH, f_lblX(_hiBar, bar_index, _lblPos, _lblOff, _sd.slot), _h)
         label.set_text(_sd.lbH, f_hlText(_showName, _showPrice, _lbl, "High", _h))
     if not na(_sd.lbL)
-        label.set_xy(_sd.lbL, _lblPos == "srodek" ? int(math.avg(_loBar, bar_index)) : bar_index, _l)
+        label.set_xy(_sd.lbL, f_lblX(_loBar, bar_index, _lblPos, _lblOff, _sd.slot), _l)
         label.set_text(_sd.lbL, f_hlText(_showName, _showPrice, _lbl, "Low", _l))
 
 // =============================================================================
@@ -358,7 +418,7 @@ f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lb
 // Zwraca [lastRange, avgRange, activeNow] na potrzeby panelu.
 // Obiekty rysunkowe trafiaja do WSPOLNEGO rejestru _reg -> globalny limit N sesji.
 // =============================================================================
-f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, int _transp, bool _showBox, bool _showHL, color _hlCol, string _hlStyle, int _hlWidth, int _keepN, bool _extendInf, bool _showName, bool _showPriceLbl, string _lblPos, string _lblSize, bool _liveHL, string _liveStyle, bool _autoAnchor, color _aaCol, string _aaStyle, int _aaWidth, bool _aaLabel, array<SessionDraw> _reg) =>
+f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, int _transp, bool _showBox, bool _showHL, color _hlCol, string _hlStyle, int _hlWidth, int _keepN, bool _extendInf, bool _showName, bool _showPriceLbl, string _lblPos, string _lblSize, bool _lblAbove, int _lblOff, int _slot, bool _liveHL, string _liveStyle, bool _autoAnchor, color _aaCol, string _aaStyle, int _aaWidth, bool _aaLabel, array<SessionDraw> _reg) =>
     var array<float> ranges   = array.new<float>()
     var float sHigh     = na
     var float sLow      = na
@@ -383,7 +443,7 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
             sLow  := low
             hiBar := bar_index
             loBar := bar_index
-            curDraw := SessionDraw.new(name = _lbl, hlCol = _hlCol)
+            curDraw := SessionDraw.new(name = _lbl, hlCol = _hlCol, slot = _slot)
             if _showBox
                 curDraw.bx := box.new(bar_index, sHigh, bar_index, sLow, border_color = color.new(_boxCol, 30), bgcolor = color.new(_boxCol, _transp))
             // LIVE H/L: linie i labele powstaja juz na starcie sesji i sa aktualizowane
@@ -395,8 +455,10 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
                 curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, color = _hlCol, style = _liveStyle, width = _hlWidth)
                 curDraw.hlL := line.new(loBar, sLow,  bar_index, sLow,  xloc = xloc.bar_index, color = _hlCol, style = _liveStyle, width = _hlWidth)
                 if _showName or _showPriceLbl
-                    curDraw.lbH := label.new(bar_index, sHigh, f_hlText(_showName, _showPriceLbl, _lbl, "High", sHigh), xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
-                    curDraw.lbL := label.new(bar_index, sLow,  f_hlText(_showName, _showPriceLbl, _lbl, "Low",  sLow),  xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                    // tlo labela w pelni przezroczyste -> na wykresie widac sam tekst,
+                    // a style_label_down/up odsuwa go NAD / POD linie (nie na nia)
+                    curDraw.lbH := label.new(bar_index, sHigh, f_hlText(_showName, _showPriceLbl, _lbl, "High", sHigh), xloc = xloc.bar_index, style = f_hlLabelStyle(_lblAbove, true),  color = color.new(color.black, 100), textcolor = _hlCol, size = _lblSize)
+                    curDraw.lbL := label.new(bar_index, sLow,  f_hlText(_showName, _showPriceLbl, _lbl, "Low",  sLow),  xloc = xloc.bar_index, style = f_hlLabelStyle(_lblAbove, false), color = color.new(color.black, 100), textcolor = _hlCol, size = _lblSize)
             // auto-anchored OPEN (pionowa linia na pierwszym barze sesji)
             if _autoAnchor
                 curDraw.aaO := line.new(bar_index, low, bar_index, high, xloc = xloc.bar_index, extend = extend.both, color = _aaCol, style = _aaStyle, width = _aaWidth)
@@ -428,7 +490,7 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
                 if curDraw.live
                     curDraw.hVal := sHigh
                     curDraw.lVal := sLow
-                    f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos)
+                    f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos, _lblOff)
             lastRange := sHigh - sLow
 
         if isEnded and not na(sHigh)
@@ -451,15 +513,15 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
                     curDraw.hlH := line.new(hiBar, sHigh, bar_index, sHigh, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
                 if na(curDraw.hlL)
                     curDraw.hlL := line.new(loBar, sLow, bar_index, sLow, xloc = xloc.bar_index, color = _hlCol, style = _hlStyle, width = _hlWidth)
-                // czysty tekst bez ramki (label.style_none) - jak "Asia High" na screenach
+                // czysty tekst bez ramki, odsuniety nad/pod linie (patrz f_hlLabelStyle)
                 if (_showName or _showPriceLbl) and na(curDraw.lbH)
-                    curDraw.lbH := label.new(bar_index, sHigh, "", xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                    curDraw.lbH := label.new(bar_index, sHigh, "", xloc = xloc.bar_index, style = f_hlLabelStyle(_lblAbove, true),  color = color.new(color.black, 100), textcolor = _hlCol, size = _lblSize)
                 if (_showName or _showPriceLbl) and na(curDraw.lbL)
-                    curDraw.lbL := label.new(bar_index, sLow, "", xloc = xloc.bar_index, style = label.style_none, textcolor = _hlCol, size = _lblSize)
+                    curDraw.lbL := label.new(bar_index, sLow, "", xloc = xloc.bar_index, style = f_hlLabelStyle(_lblAbove, false), color = color.new(color.black, 100), textcolor = _hlCol, size = _lblSize)
                 // sesja domknieta: styl finalny (zamiast 'live') + ostateczna pozycja
                 line.set_style(curDraw.hlH, _hlStyle)
                 line.set_style(curDraw.hlL, _hlStyle)
-                f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos)
+                f_syncHL(curDraw, hiBar, loBar, sHigh, sLow, _lbl, _showName, _showPriceLbl, _lblPos, _lblOff)
                 if _extendInf
                     line.set_extend(curDraw.hlH, extend.right)
                     line.set_extend(curDraw.hlL, extend.right)
@@ -478,7 +540,7 @@ f_sessionBox(bool _show, string _sess, string _tz, string _lbl, color _boxCol, i
 // Wolana co bar na calym rejestrze. Tryby: "do przebicia" (ucina linie na
 // swiecy przebicia + znacznik + alert) / "do biezacej swiecy" (ciagnie bez konca).
 // =============================================================================
-f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _lblPos, bool _sweep, bool _alertBreak) =>
+f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _lblPos, int _lblOff, bool _sweep, bool _alertBreak) =>
     if _untilBreak or _toCurrent
         for sd in _reg
             // sesje TRWAJACE pomijamy - ich H/L prowadzi f_sessionBox (live), a wlasne
@@ -488,7 +550,7 @@ f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _l
                 if not na(sd.hlH) and not sd.hBroken
                     line.set_x2(sd.hlH, bar_index)
                     if not na(sd.lbH)
-                        label.set_x(sd.lbH, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlH), bar_index)) : bar_index)
+                        label.set_x(sd.lbH, f_lblX(line.get_x1(sd.hlH), bar_index, _lblPos, _lblOff, sd.slot))
                     if _untilBreak and high > sd.hVal
                         sd.hBroken := true
                         if _sweep
@@ -499,7 +561,7 @@ f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _l
                 if not na(sd.hlL) and not sd.lBroken
                     line.set_x2(sd.hlL, bar_index)
                     if not na(sd.lbL)
-                        label.set_x(sd.lbL, _lblPos == "srodek" ? int(math.avg(line.get_x1(sd.hlL), bar_index)) : bar_index)
+                        label.set_x(sd.lbL, f_lblX(line.get_x1(sd.hlL), bar_index, _lblPos, _lblOff, sd.slot))
                     if _untilBreak and low < sd.lVal
                         sd.lBroken := true
                         if _sweep
@@ -511,7 +573,7 @@ f_updateHL(array<SessionDraw> _reg, bool _untilBreak, bool _toCurrent, string _l
 // FUNKCJA: poziom referencyjny (PDH/PDL/PDC/WO/ADR proj.)
 // Jedna linia + label aktualizowane co bar (extend.right). Brak akumulacji.
 // =============================================================================
-f_level(bool _show, float _val, color _col, string _style, int _width, string _txt, bool _showLbl, color _txtCol) =>
+f_level(bool _show, float _val, color _col, string _style, int _width, string _txt, bool _showLbl, color _txtCol, int _lblOff) =>
     var line  ln = na
     var label lb = na
     if _show and not na(_val)
@@ -523,11 +585,12 @@ f_level(bool _show, float _val, color _col, string _style, int _width, string _t
             line.set_color(ln, _col)
         if _showLbl
             if na(lb)
-                lb := label.new(bar_index, _val, _txt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(color.black, 100), textcolor = _txtCol, size = size.small)
+                // label odsuniety w prawo od ostatniej swiecy - w pusta przestrzen wykresu
+                lb := label.new(bar_index + _lblOff, _val, _txt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(color.black, 100), textcolor = _txtCol, size = size.small)
                 // ostatnia instrukcja gałęzi musi zwracac void (zgodnosc typow if/else - CE10235)
-                label.set_xy(lb, bar_index, _val)
+                label.set_xy(lb, bar_index + _lblOff, _val)
             else
-                label.set_xy(lb, bar_index, _val)
+                label.set_xy(lb, bar_index + _lblOff, _val)
                 label.set_text(lb, _txt)
                 label.set_textcolor(lb, _txtCol)
 
@@ -613,21 +676,22 @@ var array<SessionDraw> g_sessions = array.new<SessionDraw>()
 
 if intraday
     // --- Boxy sesji + globalny limit ostatnich N sesji ---
-    [azR, azA, azAc] = f_sessionBox(showAzja, sessAzja, tz, lblAzja, colAzja, transpAzja, showBoxes, masterHL and hlAzja, hlColAzja, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    // slot 0..3 rozsuwa labele sesji w poziomie (anty-nakladanie przy podobnych cenach)
+    [azR, azA, azAc] = f_sessionBox(showAzja, sessAzja, tz, lblAzja, colAzja, transpAzja, showBoxes, masterHL and hlAzja, hlColAzja, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, hlLabelAbove, hlLabelOffset, 0, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     azAct := azAc
-    [euR, euA, euAc] = f_sessionBox(showEU, sessEU, tz, lblEU, colEU, transpEU, showBoxes, masterHL and hlEU, hlColEU, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [euR, euA, euAc] = f_sessionBox(showEU, sessEU, tz, lblEU, colEU, transpEU, showBoxes, masterHL and hlEU, hlColEU, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, hlLabelAbove, hlLabelOffset, 1, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     euRangeV := euR
     euAvgV   := euA
     euAct    := euAc
-    [usR, usA, usAc] = f_sessionBox(showUSA, sessUSA, tz, lblUSA, colUSA, transpUSA, showBoxes, masterHL and hlUSA, hlColUSA, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [usR, usA, usAc] = f_sessionBox(showUSA, sessUSA, tz, lblUSA, colUSA, transpUSA, showBoxes, masterHL and hlUSA, hlColUSA, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, hlLabelAbove, hlLabelOffset, 2, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     usRangeV := usR
     usAvgV   := usA
     usAct    := usAc
-    [gpwR, gpwA, gpwAc] = f_sessionBox(showGPW, sessGPW, tz, lblGPW, colGPW, transpGPW, showBoxes, masterHL and hlGPW, hlColGPW, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
+    [gpwR, gpwA, gpwAc] = f_sessionBox(showGPW, sessGPW, tz, lblGPW, colGPW, transpGPW, showBoxes, masterHL and hlGPW, hlColGPW, hlStyle, hlWidth, keepN, hlExtendInf, showNameLabel, showPriceLabel, hlLabelPosIn, hlLabelSize, hlLabelAbove, hlLabelOffset, 3, liveHL, liveStyle, autoAnchor, stdLineCol, stdLineStyle, stdLineWidth, showHourLabel, g_sessions)
     gpwAct := gpwAc
 
     // --- Prowadzenie linii H/L w prawo + detekcja sweep (co bar, caly rejestr) ---
-    f_updateHL(g_sessions, hlUntilBreak, hlToCurrent, hlLabelPosIn, sweepMark, alertHLBreak)
+    f_updateHL(g_sessions, hlUntilBreak, hlToCurrent, hlLabelPosIn, hlLabelOffset, sweepMark, alertHLBreak)
 
     // --- Linie kluczowych godzin (custom WAW) ---
     f_drawKeyHours(customOn, customMins, macroMins, tz, stdLineCol, macroLineCol, stdLineStyle, stdLineWidth, showHourLabel, alertCustom)
@@ -636,13 +700,22 @@ if intraday
     f_openingRange(orShow, orSess, tz, orLen, orCol, keepN)
 
 // --- Poziomy referencyjne (rysowane na KAZDYM interwale, takze 1D/1W) ---
-f_level(showPDH, pdh, pdhCol, pdhStyle, refWidth, "PDH " + str.tostring(pdh, format.mintick), showRefLabels, pdhCol)
-f_level(showPDL, pdl, pdlCol, pdlStyle, refWidth, "PDL " + str.tostring(pdl, format.mintick), showRefLabels, pdlCol)
-f_level(showPDC, pdc, pdcCol, pdcStyle, refWidth, "PDC " + str.tostring(pdc, format.mintick), showRefLabels, pdcCol)
-f_level(showWO,  wOpen, woCol, woStyle, refWidth, "WO "  + str.tostring(wOpen, format.mintick), showRefLabels, woCol)
-f_level(showDO,  dOpen, doCol, doStyle, refWidth, "DO "  + str.tostring(dOpen, format.mintick), showRefLabels, doCol)
-f_level(adrShow and adrProj, dOpen + adr, adrCol, adrStyle, refWidth, "ADR+ " + str.tostring(dOpen + adr, format.mintick), showRefLabels, adrCol)
-f_level(adrShow and adrProj, dOpen - adr, adrCol, adrStyle, refWidth, "ADR- " + str.tostring(dOpen - adr, format.mintick), showRefLabels, adrCol)
+// Poziomy DZIENNE - na W1/M1 chowane (tam sa juz tylko szumem)
+f_level(showPDH and lvlDay, pdh, pdhCol, pdhStyle, refWidth, "PDH " + str.tostring(pdh, format.mintick), showRefLabels, pdhCol, refLabelOff)
+f_level(showPDL and lvlDay, pdl, pdlCol, pdlStyle, refWidth, "PDL " + str.tostring(pdl, format.mintick), showRefLabels, pdlCol, refLabelOff)
+f_level(showPDC and lvlDay, pdc, pdcCol, pdcStyle, refWidth, "PDC " + str.tostring(pdc, format.mintick), showRefLabels, pdcCol, refLabelOff)
+f_level(showDO  and lvlDay, dOpen, doCol, doStyle, refWidth, "DO "  + str.tostring(dOpen, format.mintick), showRefLabels, doCol, refLabelOff)
+f_level(adrShow and adrProj and lvlDay, dOpen + adr, adrCol, adrStyle, refWidth, "ADR+ " + str.tostring(dOpen + adr, format.mintick), showRefLabels, adrCol, refLabelOff)
+f_level(adrShow and adrProj and lvlDay, dOpen - adr, adrCol, adrStyle, refWidth, "ADR- " + str.tostring(dOpen - adr, format.mintick), showRefLabels, adrCol, refLabelOff)
+// Poziomy TYGODNIOWE - na M1 chowane
+f_level(showWO  and lvlWeek, wOpen, woCol, woStyle, refWidth, "WO "  + str.tostring(wOpen, format.mintick), showRefLabels, woCol, refLabelOff)
+f_level(showPWH and lvlWeek, pwh, pwCol, pwStyle, refWidth, "PWH " + str.tostring(pwh, format.mintick), showRefLabels, pwCol, refLabelOff)
+f_level(showPWH and lvlWeek, pwl, pwCol, pwStyle, refWidth, "PWL " + str.tostring(pwl, format.mintick), showRefLabels, pwCol, refLabelOff)
+// Poziomy MIESIECZNE / ROCZNE - sensowne na kazdym interwale (kotwice makro)
+f_level(showPMH, pmh, pmCol, pmStyle, refWidth, "PMH " + str.tostring(pmh, format.mintick), showRefLabels, pmCol, refLabelOff)
+f_level(showPMH, pml, pmCol, pmStyle, refWidth, "PML " + str.tostring(pml, format.mintick), showRefLabels, pmCol, refLabelOff)
+f_level(showMO,  mOpen, moCol, moStyle, refWidth, "MO "  + str.tostring(mOpen, format.mintick), showRefLabels, moCol, refLabelOff)
+f_level(showYO,  yOpen, yoCol, yoStyle, refWidth, "YO "  + str.tostring(yOpen, format.mintick), showRefLabels, yoCol, refLabelOff)
 
 // =============================================================================
 // OVERLAP LON-NY - czesc wspolna EU i USA (bgcolor, global scope)
@@ -762,15 +835,17 @@ if showPanel and barstate.islast
     // Sentyment (vs Day Open / Weekly Open)
     table.cell(panel, 0, 4, "Sentyment", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
     table.cell(panel, 1, 4, sentTxt == "" ? "—" : sentTxt, text_color = sentCol, text_size = panelTxtSize, text_halign = text.align_right)
-    // Range EU
-    table.cell(panel, 0, 5, lblEU + " range", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
-    table.cell(panel, 1, 5, euTxt, text_color = color.white, text_size = panelTxtSize, bgcolor = euCell, text_halign = text.align_right)
-    // Range USA
-    table.cell(panel, 0, 6, lblUSA + " range", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
-    table.cell(panel, 1, 6, usTxt, text_color = color.white, text_size = panelTxtSize, bgcolor = usCell, text_halign = text.align_right)
+    // Range sesji (intraday) LUB range poprzedniego tygodnia/miesiaca (HTF) -
+    // na D1/W1/M1 range sesji nie jest liczony, wiec wiersze pokazuja realne dane HTF
+    string pwRangeTxt = na(pwh) or na(pwl) ? "—" : str.tostring(pwh - pwl, format.mintick)
+    string pmRangeTxt = na(pmh) or na(pml) ? "—" : str.tostring(pmh - pml, format.mintick)
+    table.cell(panel, 0, 5, intraday ? lblEU + " range" : "Prev week range", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
+    table.cell(panel, 1, 5, intraday ? euTxt : pwRangeTxt, text_color = color.white, text_size = panelTxtSize, bgcolor = intraday ? euCell : na, text_halign = text.align_right)
+    table.cell(panel, 0, 6, intraday ? lblUSA + " range" : "Prev month range", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
+    table.cell(panel, 1, 6, intraday ? usTxt : pmRangeTxt, text_color = color.white, text_size = panelTxtSize, bgcolor = intraday ? usCell : na, text_halign = text.align_right)
     // ADR
     table.cell(panel, 0, 7, "ADR(" + str.tostring(adrLen) + ")", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
     table.cell(panel, 1, 7, na(adr) ? "—" : str.tostring(adr, format.mintick), text_color = color.white, text_size = panelTxtSize, text_halign = text.align_right)
     // ADR % skonsumowane dzisiaj
     table.cell(panel, 0, 8, "ADR consumed", text_color = color.gray, text_size = panelTxtSize, text_halign = text.align_left)
-    table.cell(panel, 1, 8, (not adrPctShow or na(pctADR)) ? "—" : str.tostring(pctADR, "#.#") + "%", text_color = color.white, text_size = panelTxtSize, text_halign = text.align_right)
+    table.cell(panel, 1, 8, (not adrPctShow or na(pctADR) or not lvlDay) ? "—" : str.tostring(pctADR, "#.#") + "%", text_color = color.white, text_size = panelTxtSize, text_halign = text.align_right)
