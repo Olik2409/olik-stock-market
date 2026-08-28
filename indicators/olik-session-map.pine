@@ -175,6 +175,7 @@ hlLabelPosIn   = input.string("koniec linii", "Pozycja labela", options = ["koni
 hlLabelAbove   = input.bool(true,  "Label nad/pod linia (nie na niej)", group = g_hl, tooltip = "ON: 'AZJA High' siedzi NAD swoja linia, 'AZJA Low' POD nia - linia nie przecina tekstu. OFF: tekst dokladnie na linii (stare zachowanie).")
 hlLabelOffset  = input.int(2, "Odsuniecie labela (bary)", minval = 0, maxval = 50, group = g_hl, tooltip = "Odsuwa tekst w prawo od punktu zaczepienia. Kazda sesja dostaje inne odsuniecie (AZJA/EU/USA/GPW), wiec labele o podobnej cenie nie naskakuja na siebie.")
 hlLabelSizeIn  = input.string("small", "Rozmiar labela", options = ["tiny", "small", "normal"], group = g_hl)
+lblGapPct      = input.float(4, "Min. odstep labeli (% ADR)", minval = 0, maxval = 50, step = 0.5, group = g_hl, tooltip = "Anty-nakladanie: jesli dwa labele wypadna blizej niz ten odstep (liczony jako % ADR, wiec skaluje sie do instrumentu), zostana rozsuniete w pionie. Linie zostaja na swoich cenach - przesuwa sie tylko tekst. 0 = wylacz rozsuwanie.")
 liveHL         = input.bool(true,  "H/L trwajacej sesji (live)",        group = g_hl, tooltip = "Rysuje high/low sesji juz W TRAKCIE jej trwania i aktualizuje co swiece. Dzieki temu np. o 09:30 (start EU) widzisz biezacy H/L wciaz trwajacej AZJI, a o 15:30 (start USA) biezacy H/L trwajacego EU. Po zamknieciu sesji linia przelacza sie na styl finalny.")
 liveStyleIn    = input.string("dotted", "Styl linii live", options = ["solid", "dashed", "dotted"], group = g_hl, tooltip = "Osobny styl dla sesji jeszcze trwajacej - odrozniasz poziom 'w budowie' od domknietego.")
 sweepMark      = input.bool(true,  "Znacznik przebicia (sweep)",        group = g_hl, tooltip = "Rysuje mala 'x' na swiecy, ktora przebila session high/low - szybki odczyt: poziom zdjety.")
@@ -412,6 +413,55 @@ f_syncHL(SessionDraw _sd, int _hiBar, int _loBar, float _h, float _l, string _lb
     if not na(_sd.lbL)
         label.set_xy(_sd.lbL, f_lblX(_loBar, bar_index, _lblPos, _lblOff, _sd.slot), _l)
         label.set_text(_sd.lbL, f_hlText(_showName, _showPrice, _lbl, "Low", _l))
+
+// Rozsuwa w PIONIE labele, ktore wypadly zbyt blisko siebie - np. "EU High" i
+// "USA High" oddalone o 1 punkt naskakiwaly na siebie. Linie zostaja na swoich
+// cenach; przesuwany jest wylacznie tekst, wiec odczyt poziomu sie nie zmienia.
+// Label High renderuje sie NAD kotwica, Low POD nia, wiec kolizje liczymy na
+// "wirtualnych srodkach" tekstu, a potem wracamy na kotwice (tablica adj).
+f_deconflict(array<SessionDraw> _reg, float _minGap) =>
+    if _minGap > 0
+        cy  = array.new<float>()   // wirtualny srodek tekstu
+        adj = array.new<float>()   // powrot ze srodka na pozycje labela
+        lbs = array.new<label>()
+        half = _minGap * 0.5
+        for sd in _reg
+            if not na(sd.lbH) and not na(sd.hVal)
+                array.push(cy, sd.hVal + half)
+                array.push(adj, -half)
+                array.push(lbs, sd.lbH)
+            if not na(sd.lbL) and not na(sd.lVal)
+                array.push(cy, sd.lVal - half)
+                array.push(adj, half)
+                array.push(lbs, sd.lbL)
+        n = array.size(cy)
+        // sortowanie rosnaco po cenie (selection sort - max ~8 elementow).
+        // Swiadomie bez insertion sort: tam warunek petli siegalby indeksu -1,
+        // a Pine nie gwarantuje short-circuit dla array.get -> runtime error.
+        if n > 1
+            for i = 0 to n - 2
+                m = i
+                for j = i + 1 to n - 1
+                    if array.get(cy, j) < array.get(cy, m)
+                        m := j
+                if m != i
+                    tC = array.get(cy, i)
+                    tA = array.get(adj, i)
+                    tL = array.get(lbs, i)
+                    array.set(cy,  i, array.get(cy, m))
+                    array.set(adj, i, array.get(adj, m))
+                    array.set(lbs, i, array.get(lbs, m))
+                    array.set(cy,  m, tC)
+                    array.set(adj, m, tA)
+                    array.set(lbs, m, tL)
+        // idac od dolu: kazdy kolejny label musi byc co najmniej _minGap wyzej
+        if n > 0
+            float prevY = na
+            for i = 0 to n - 1
+                c = array.get(cy, i)
+                y = na(prevY) ? c : math.max(c, prevY + _minGap)
+                label.set_y(array.get(lbs, i), y + array.get(adj, i))
+                prevY := y
 
 // =============================================================================
 // FUNKCJA: BOX SESJI + running high/low + H/L rays + auto-anchored open/close
@@ -692,6 +742,9 @@ if intraday
 
     // --- Prowadzenie linii H/L w prawo + detekcja sweep (co bar, caly rejestr) ---
     f_updateHL(g_sessions, hlUntilBreak, hlToCurrent, hlLabelPosIn, hlLabelOffset, sweepMark, alertHLBreak)
+
+    // --- Anty-nakladanie labeli: rozsuniecie w pionie przy kolizji ---
+    f_deconflict(g_sessions, (na(adr) or adr <= 0 or lblGapPct <= 0) ? 0.0 : adr * lblGapPct / 100.0)
 
     // --- Linie kluczowych godzin (custom WAW) ---
     f_drawKeyHours(customOn, customMins, macroMins, tz, stdLineCol, macroLineCol, stdLineStyle, stdLineWidth, showHourLabel, alertCustom)
