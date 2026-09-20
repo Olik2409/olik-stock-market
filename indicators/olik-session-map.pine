@@ -21,7 +21,7 @@
 // samych godzinach zegarowych Warszawy.
 // =============================================================================
 
-indicator("OLIK Session Map", "OLIK SM", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+indicator("OLIK Session Map", "OLIK Session Map", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // =============================================================================
 // GRUPY (group=) - nazwy uzywane w inputach
@@ -75,6 +75,17 @@ f_lblX(int _anchorBar, int _endBar, string _pos, int _off, int _slot) =>
 // Tekst labela poziomu referencyjnego: sam skrot albo skrot + cena
 f_refTxt(string _name, float _v, bool _showPrice) =>
     _showPrice ? _name + " " + str.tostring(_v, format.mintick) : _name
+
+// Przesuwa timestamp na najblizszy dzien roboczy (sesje nie startuja w weekend).
+// Max 2 doby do przodu wystarcza: sobota -> niedziela -> poniedzialek.
+f_nextWorkday(int _ts, string _tz, bool _skip) =>
+    out = _ts
+    if _skip
+        for k = 0 to 2
+            dw = dayofweek(out, _tz)
+            if dw == dayofweek.saturday or dw == dayofweek.sunday
+                out := out + 86400000
+    out
 
 // Dopelnia liczbe do 2 cyfr (np. 9 -> "09")
 f_pad2(int v) =>
@@ -182,7 +193,7 @@ hlLabelSizeIn  = input.string("small", "Rozmiar labela", options = ["tiny", "sma
 lblGapPct      = input.float(6, "Min. odstep labeli (% ADR)", minval = 0, maxval = 50, step = 0.5, group = g_hl, tooltip = "Anty-nakladanie: jesli dwa labele wypadna blizej niz ten odstep (liczony jako % ADR, wiec skaluje sie do instrumentu), zostana rozsuniete w pionie. Linie zostaja na swoich cenach - przesuwa sie tylko tekst. 0 = wylacz rozsuwanie.")
 liveHL         = input.bool(true,  "H/L trwajacej sesji (live)",        group = g_hl, tooltip = "Rysuje high/low sesji juz W TRAKCIE jej trwania i aktualizuje co swiece. Dzieki temu np. o 09:30 (start EU) widzisz biezacy H/L wciaz trwajacej AZJI, a o 15:30 (start USA) biezacy H/L trwajacego EU. Po zamknieciu sesji linia przelacza sie na styl finalny.")
 liveStyleIn    = input.string("dotted", "Styl linii live", options = ["solid", "dashed", "dotted"], group = g_hl, tooltip = "Osobny styl dla sesji jeszcze trwajacej - odrozniasz poziom 'w budowie' od domknietego.")
-sweptDim       = input.int(55, "Wygaszenie przebitych poziomow (%)", minval = 0, maxval = 100, group = g_hl, tooltip = "Po zdjeciu poziomu linia i tekst przygasaja o tyle procent - historia zostaje czytelna, ale nie konkuruje z aktywnymi poziomami. 0 = bez wygaszania.")
+sweptDim       = input.int(0, "Wygaszenie przebitych poziomow (%)", minval = 0, maxval = 100, group = g_hl, tooltip = "Przygasza linie i tekst poziomu PO jego zdjeciu. Domyslnie 0, czyli wszystkie poziomy maja identyczna moc koloru. Uwaga: wartosc > 0 sprawia, ze przebite poziomy (np. wszystkie High po wybiciu szczytu) wygladaja slabiej niz nieprzebite Low - to zamierzone, ale bywa mylone z bledem. Sam fakt zdjecia poziomu i tak widac po uciecie linii i znaczniku 'x'.")
 sweepMark      = input.bool(true,  "Znacznik przebicia (sweep)",        group = g_hl, tooltip = "Rysuje mala 'x' na swiecy, ktora przebila session high/low - szybki odczyt: poziom zdjety.")
 hlStyleIn      = input.string("solid", "Styl linii H/L", options = ["solid", "dashed", "dotted"], group = g_hl)
 hlWidth        = input.int(1,      "Grubosc linii H/L", minval = 1, maxval = 5, group = g_hl)
@@ -262,6 +273,7 @@ accentCol    = input.color(#00E5FF, "Kolor akcentu naglowka",          group = g
 panelBgCol   = input.color(#0B0E14, "Tlo panelu",                       group = g_panel, inline = "pbg", tooltip = "Panel musi miec NIEPRZEZROCZYSTE tlo - inaczej linie poziomow (WO, ADR-, PDL...) przechodza przez wykres pod nim i tna tekst. Podnies transparency tylko jesli swiadomie chcesz przeswitywanie.")
 panelBgTrans = input.int(5, "transp.", minval = 0, maxval = 100,         group = g_panel, inline = "pbg")
 panelCompact = input.bool(false, "Panel kompaktowy (bez wierszy sesji)", group = g_panel, tooltip = "Ukrywa trzy wiersze z range sesji - panel jest o 30% nizszy i nie wchodzi na etykiety Maximum/Minimum TradingView w rogu wykresu.")
+skipWeekend  = input.bool(true, "Countdown pomija weekend",              group = g_panel, tooltip = "Sesje nie startuja w sobote i niedziele. Bez tego w weekend panel odliczalby np. 'USA OPEN 1h31m', choc rynek jest zamkniety - z tym przeskakuje na poniedzialek.")
 showSentiment= input.bool(true, "Wiersz sentymentu (vs Day/Weekly open)", group = g_panel, tooltip = "Pokazuje % zmiany ceny wzgledem otwarcia dnia (DO) i tygodnia (WO) - szybki odczyt sentymentu: nad otwarciem = popyt, pod = podaz.")
 
 // --- Opening Range (default OFF) ---
@@ -914,6 +926,9 @@ if showPanel and barstate.islast
                 oTs := oTs + 86400000
             if cTs <= timenow
                 cTs := cTs + 86400000
+            // weekend: przeskocz na poniedzialek, zeby nie odliczac do zamknietego rynku
+            oTs := f_nextWorkday(oTs, tz, skipWeekend)
+            cTs := f_nextWorkday(cTs, tz, skipWeekend)
             dOpenMin  = (oTs - timenow) / 60000.0
             dCloseMin = (cTs - timenow) / 60000.0
             if na(nextDelta) or dOpenMin < nextDelta
@@ -922,7 +937,8 @@ if showPanel and barstate.islast
             if dCloseMin < nextDelta
                 nextDelta := dCloseMin
                 nextName  := array.get(sNames, i) + " CLOSE"
-    string nextStr = na(nextDelta) ? "" : nextDelta >= 60 ? str.tostring(int(nextDelta / 60)) + "h" + f_pad2(int(nextDelta) % 60) + "m" : str.tostring(int(nextDelta)) + "m"
+    int    nd      = int(nextDelta)
+    string nextStr = na(nextDelta) ? "" : nd >= 1440 ? str.tostring(int(nd / 1440)) + "d " + str.tostring(int((nd % 1440) / 60)) + "h" : nd >= 60 ? str.tostring(int(nd / 60)) + "h" + f_pad2(nd % 60) + "m" : str.tostring(nd) + "m"
 
     // --- Range sesji EU/USA + % sredniej N-dniowej ---
     string gpwTxt = na(gpwRangeV) ? "—" : str.tostring(gpwRangeV, format.mintick) + (na(gpwAvgV) or gpwAvgV == 0 ? "" : " (" + str.tostring(gpwRangeV / gpwAvgV * 100, "#") + "%)")
