@@ -40,31 +40,58 @@
 // Kazde pytanie ma wlasna grupe inputow, zeby bylo widac, ktory parametr
 // odpowiada za ktory etap rozumowania:
 //
+//  PYTANIE 3 JEST PIERWSZE: gdzie leza dwie krawedzie zakresu?
+//     Zakres to najwyzszy high i najnizszy low z okna, pod warunkiem ze
+//     geometria sie zgadza: wysokosc miedzy min. a max. progiem w ATR i obie
+//     krawedzie faktycznie dotykane przez cene. Od momentu ustalenia sa to
+//     JEDYNE poziomy majace znaczenie, wiec krawedzie sa STALE. Poziom, na
+//     ktorym wchodzisz, nie moze sie zmienic po fakcie.
+//
 //  PYTANIE 1: co bylo PRZED zakresem?
-//     Spadek -> kandydat na akumulacje. Wzrost -> na dystrybucje.
-//     Zakres po ruchu BOCZNYM nie jest schematem Wyckoffa, tylko brakiem
-//     informacji - i wlasnie dlatego silnik go odrzuca. Kierunkowosc mierzy
-//     Efficiency Ratio (droga netto / droga pokonana), a wielkosc nogi - w ATR.
-//     To jest najsilniejszy filtr false signals w calym wskazniku.
+//     Spadek -> akumulacja. Wzrost -> dystrybucja. Mierzone jako netto ruch
+//     w ATR na oknie konczacym sie tam, gdzie zaczyna sie zakres. To
+//     KLASYFIKUJE zakres, ktory juz zostal wykryty.
 //
-//  PYTANIE 2: czy jest swieca klimaksowa?
-//     Najszersza swieca calego ruchu, na obrocie nienotowanym od wielu
-//     tygodni, z zamknieciem daleko od ekstremum. JEST klimaks -> schemat
-//     ODWROCENIA (AKUMULACJA / DYSTRYBUCJA). BRAK klimaksu -> schemat
-//     KONTYNUACJI (RE-AKUMULACJA / RE-DYSTRYBUCJA). Ta roznica zmienia teze
-//     transakcyjna o 180 stopni, wiec wskaznik nigdy jej nie zaciera.
-//
-//  PYTANIE 3: gdzie leza dwie krawedzie zakresu?
-//     Od momentu ich ustalenia sa to JEDYNE poziomy majace znaczenie, wiec
-//     krawedzie sa STALE - raz wyznaczone przez SC/AR (lub BC/AR) nigdy sie
-//     nie przesuwaja. Poza wiernoscia metodzie daje to drugi efekt: poziom,
-//     na ktorym wchodzisz, nie moze sie zmienic po fakcie.
+//  PYTANIE 2: czy jest swieca klimaksowa NA KRAWEDZI?
+//     Swieca, ktora wyznaczyla krawedz zakresu, o szerokosci i obrocie w
+//     najwyzszych percentylach i z zamknieciem daleko od ekstremum. JEST
+//     klimaks -> schemat ODWROCENIA (AKUMULACJA / DYSTRYBUCJA). BRAK ->
+//     schemat KONTYNUACJI (RE-AKUMULACJA / RE-DYSTRYBUCJA). Ta roznica zmienia
+//     teze o 180 stopni, wiec wskaznik nigdy jej nie zaciera - ale rowniez
+//     nigdy nie blokuje z jej powodu detekcji.
 //
 //  PYTANIE 4: jak zachowuje sie obrot WEWNATRZ zakresu?
 //     Bilans wysilku (patrz prawo 3) - wiersz "Wysilek" w panelu.
 //
 //  PYTANIE 5: czy wstrzas w fazie C spelnia warunki wstrzasu?
 //     Czyli: czy poza krawedzia NIE powstala akceptacja. Patrz nizej.
+//
+// -----------------------------------------------------------------------------
+// KOLEJNOSC MA ZNACZENIE: NAJPIERW ZAKRES, POTEM NAZWA
+// -----------------------------------------------------------------------------
+// Pierwsza wersja tego wskaznika rodzila strukture z KLIMAKSU: dopoki nie padla
+// swieca o szerokosci i obrocie w 95. percentylu, z odpowiednim domknieciem, po
+// odpowiednio dlugiej i odpowiednio kierunkowej nodze - nie dzialo sie nic.
+// Koniunkcja pieciu rzadkich warunkow daje prawdopodobienstwo startu rzedu raz
+// na kilka tysiecy barow. Wskaznik milczal na kazdym instrumencie i kazdym
+// interwale, co bylo bledem konstrukcyjnym, nie kwestia strojenia.
+//
+// Kolejnosc jest odwrocona i zgodna z tym, jak robia to dzialajace
+// implementacje metody:
+//
+//   1. ZAKRES jest obiektem podstawowym i wykrywa sie go geometrycznie.
+//      Zaden warunek jakosciowy nie moze go skasowac.
+//   2. TREND PRZED NIM nadaje kierunek (akumulacja albo dystrybucja).
+//   3. KLIMAKS NA KRAWEDZI decyduje, czy to odwrocenie, czy kontynuacja.
+//   4. Wszystko inne - dlugosc przyczyny, kierunkowosc nogi, bilans wysilku,
+//      liczba dotkniec krawedzi - sklada sie na OCENE JAKOSCI 0-100, a nie na
+//      decyzje byc albo nie byc.
+//
+// Skala ocen zamiast decyzji zero-jedynkowej jest tu zgodna z praktyka: przy
+// komplecie spelnionych kryteriow szansa na realna akumulacje podawana jest na
+// 75-85%, przy jednym niespelnionym na 50-60%, przy dwoch spada ponizej 40%.
+// Rynek nie dostarcza podrecznikowych schematow, wiec wskaznik, ktory pokazuje
+// wylacznie podrecznikowe, nie pokazuje nic.
 //
 // -----------------------------------------------------------------------------
 // JEDEN WSKAZNIK NA WSZYSTKIE INTERWALY (M1 ... W1/M1 miesieczny)
@@ -267,22 +294,19 @@ volFilterOn = input.bool(true, "Uzywaj wolumenu w detekcji", group = g_core, too
 
 // --- 2. Trend przed zakresem (pytanie 1) -------------------------------------
 trendLenIn  = input.int(40,  "Okno pomiaru trendu (bary)", minval = 10, maxval = 300, group = g_trend, tooltip = "Na ilu barach wstecz mierzymy ruch poprzedzajacy zakres. Za krotkie okno nazwie schematem zwykla korekte, za dlugie przegapi szybkie odwrocenia.")
-minLegATR   = input.float(4.0, "Min. wielkosc nogi (x ATR)", minval = 0.5, maxval = 30, step = 0.5, group = g_trend, tooltip = "Ile ATR musi miec spadek (do akumulacji) lub wzrost (do dystrybucji) poprzedzajacy zakres. To odsiewa zakresy powstale po plaskim rynku, ktore nie sa schematem Wyckoffa, tylko brakiem informacji.")
-minER       = input.float(0.30, "Min. kierunkowosc (Efficiency Ratio)", minval = 0.0, maxval = 1.0, step = 0.05, group = g_trend, tooltip = "Droga netto podzielona przez sume ruchow jednostkowych. 0.30 oznacza, ze rynek musial faktycznie dokads isc, a nie pilowac. PODNIES, jesli wskaznik lapie zakresy po chaotycznym rynku; OBNIZ na instrumentach bardzo zmiennych.")
+minLegATR   = input.float(2.0, "Min. wielkosc nogi (x ATR)", minval = 0.5, maxval = 30, step = 0.5, group = g_trend, tooltip = "Ile ATR musi miec spadek (do akumulacji) lub wzrost (do dystrybucji) poprzedzajacy zakres. To odsiewa zakresy powstale po plaskim rynku, ktore nie sa schematem Wyckoffa, tylko brakiem informacji.")
+minER       = input.float(0.30, "Kierunkowosc do pelnej oceny (ER)", minval = 0.0, maxval = 1.0, step = 0.05, group = g_trend, tooltip = "Droga netto podzielona przez sume ruchow jednostkowych. UWAGA: to NIE jest brama. ER byl wczesniej twardym warunkiem i to on wylaczal caly wskaznik, bo maleje z dlugoscia okna. Teraz jest skladnikiem OCENY jakosci: ruch kierunkowy podnosi ocene struktury, ruch chaotyczny ja obniza, ale zadnego zakresu nie kasuje.")
 
 // --- 3. Klimaks SC / BC (pytanie 2) ------------------------------------------
 climaxLookIn= input.int(60,  "Okno porownania klimaksu (bary)", minval = 20, maxval = 500, group = g_clx, tooltip = "Klimaks ma byc najszersza swieca ruchu na obrocie nienotowanym OD WIELU TYGODNI - to okno definiuje 'wiele tygodni'. Na D1 60 barow to ok. 3 miesiace.")
 climaxRngPct= input.float(95, "Min. percentyl zakresu swiecy", minval = 50, maxval = 100, step = 1, group = g_clx, tooltip = "Jak szeroka na tle okna ma byc swieca klimaksowa. 95 = szersza niz 95% swiec z okna. Obnizenie ponizej 90 zaczyna lapac zwykle swiece impulsowe.")
 climaxVolPct= input.float(95, "Min. percentyl wolumenu", minval = 50, maxval = 100, step = 1, group = g_clx, tooltip = "Analogicznie dla obrotu. Razem z percentylem zakresu tworzy warunek 'najszersza swieca na najwyzszym wolumenie'.")
 clxClosePos = input.float(0.35, "Min. domkniecie od ekstremum (0-1)", minval = 0.0, maxval = 0.5, step = 0.05, group = g_clx, tooltip = "Selling Climax ma zamkniecie DALEKO od minimum, bo panika ostatnich posiadaczy jest wchlaniana przez silne rece. 0.35 = zamkniecie w gornych 65% zakresu swiecy. Buying Climax - lustrzanie. To ten warunek odroznia klimaks od zwyklej swiecy kapitulacyjnej, ktora zamyka sie na dnie.")
-clxNewExtr  = input.int(20,  "Klimaks musi zrobic ekstremum z N barow", minval = 5, maxval = 200, group = g_clx, tooltip = "Klimaks konczy ruch, wiec musi wyznaczyc nowe minimum (SC) lub maksimum (BC) na tle ostatnich N barow. Zabezpiecza przed nazwaniem klimaksem swiecy w srodku konsolidacji.")
 psVolMult   = input.float(1.5, "PS/PSY: min. wolumen (x srednia)", minval = 1.0, maxval = 10, step = 0.1, group = g_clx, tooltip = "Preliminary Support to pierwszy slad: swieca, na ktorej po dlugiej przecenie pojawia sie wyrazny, kupujacy obrot. To jeszcze nie odwrocenie, tylko informacja, ze ktos zaczal zbierac.")
 psClosePos  = input.float(0.55, "PS/PSY: min. domkniecie od ekstremum", minval = 0.0, maxval = 1.0, step = 0.05, group = g_clx, tooltip = "Zamkniecie w gornej czesci swiecy (PS) lub dolnej (PSY) - slad strony przeciwnej do trendu.")
 psLookbackIn= input.int(30,  "PS/PSY: max. dystans do klimaksu (bary)", minval = 3, maxval = 200, group = g_clx, tooltip = "PS jest oznaczany dopiero w momencie POTWIERDZENIA klimaksu (sam z siebie nie jest sygnalem). Ten parametr mowi, jak daleko wstecz wolno go szukac.")
 
 // --- 4. Zakres i krawedzie (pytanie 3) ---------------------------------------
-arMaxBarsIn = input.int(30,  "Max. barow na uformowanie AR", minval = 3, maxval = 200, group = g_rng, tooltip = "Automatic Rally (lub Automatic Reaction) musi przyjsc zaraz po klimaksie. Jesli w tym oknie nie powstanie pivot wyznaczajacy druga krawedz, struktura jest porzucana - klimaks bez AR nie zbudowal zakresu.")
-invalidATR  = input.float(0.5, "Uniewaznienie klimaksu (x ATR)", minval = 0.0, maxval = 5, step = 0.1, group = g_rng, tooltip = "O ile cena moze przebic ekstremum klimaksu PRZED uformowaniem AR, zanim uznamy klimaks za nieudany. Mala tolerancja jest potrzebna, bo marginalne przebicia sa normalne.")
 maxRangeBarsIn = input.int(400, "Max. dlugosc zakresu (bary)", minval = 30, maxval = 3000, group = g_rng, tooltip = "Zakres, ktory ciagnie sie bez rozstrzygniecia dluzej niz N barow, przestaje byc przyczyna i staje sie nowym rezimem. Po przekroczeniu struktura jest zamykana jako nierozstrzygnieta.")
 edgeTolPct  = input.float(12, "Tolerancja krawedzi (% wysokosci zakresu)", minval = 1, maxval = 50, step = 1, group = g_rng, tooltip = "Jak blisko krawedzi musi wypasc pivot, zeby uznac go za TEST tej krawedzi (ST, LPS, LPSY). Liczone jako procent wysokosci zakresu, wiec skaluje sie do instrumentu i do samej struktury.")
 
@@ -322,8 +346,10 @@ t2Mult      = input.float(2.0, "Cel 2 (x wysokosc zakresu)", minval = 0.2, maxva
 
 // --- 9. Filtry false signals -------------------------------------------------
 reStructOn  = input.bool(true, "Wykrywaj RE-AKUMULACJE / RE-DYSTRYBUCJE", group = g_filter, tooltip = "Zakres BEZ swiecy klimaksowej w trwajacym trendzie sugeruje reakumulacje lub redystrybucje, po ktorej nalezy oczekiwac KONTYNUACJI, nie odwrocenia. Wylaczenie tej opcji ukrywa takie struktury - wtedy wskaznik pokazuje wylacznie schematy odwrocenia.")
-consolLenIn = input.int(20,  "Okno detekcji konsolidacji (bary)", minval = 6, maxval = 200, group = g_filter, tooltip = "Dotyczy wylacznie sciezki bez klimaksu. Na ilu barach szukamy ciasnego zakresu.")
-consolMaxATR= input.float(3.0, "Max. wysokosc konsolidacji (x ATR)", minval = 0.5, maxval = 15, step = 0.1, group = g_filter, tooltip = "Zakres szerszy niz N ATR nie jest konsolidacja, tylko normalna zmiennoscia.")
+consolLenIn = input.int(30,  "Okno detekcji zakresu (bary)", minval = 6, maxval = 400, group = g_filter, tooltip = "Na ilu barach szukamy zakresu metoda najwyzszy-high / najnizszy-low. To jest PODSTAWOWY obiekt wskaznika: zakres wykrywamy zawsze, gdy spelnia warunki geometryczne, a dopiero potem klasyfikujemy go jako akumulacje, dystrybucje lub kontynuacje.")
+minRangeATR = input.float(1.5, "Min. wysokosc zakresu (x ATR)", minval = 0.2, maxval = 10, step = 0.1, group = g_filter, tooltip = "Zakres nizszy niz N ATR to nie struktura, tylko chwilowy bezruch. Odsiewa mikro-zakresy, w ktorych nie da sie zbudowac zadnej przyczyny.")
+maxRangeATR = input.float(8.0, "Max. wysokosc zakresu (x ATR)", minval = 1, maxval = 30, step = 0.5, group = g_filter, tooltip = "Zakres szerszy niz N ATR to juz trend, nie konsolidacja. Prog 8 ATR jest przyjety w dzialajacych implementacjach Wyckoffa i jest DUZO luzniejszy niz intuicja podpowiada - rynek oddycha szerzej, niz sie wydaje, a zbyt ciasny prog wylacza detekcje calkowicie.")
+minTouch    = input.int(2, "Min. dotkniec kazdej krawedzi", minval = 1, maxval = 10, group = g_filter, tooltip = "Ile razy cena musiala odwiedzic okolice gornej i dolnej krawedzi, zeby uznac zakres za realny. To odroznia zakres, ktory rynek faktycznie respektuje, od przypadkowego przedzialu min-max w trendzie.")
 structCoolIn= input.int(30,  "Karencja miedzy strukturami (bary)", minval = 0, maxval = 400, group = g_filter, tooltip = "Minimalny odstep od zamkniecia poprzedniej struktury. Zapobiega laczeniu sie struktur i seryjnym, nakladajacym sie oznaczeniom. Na szumie intraday to glowny hamulec przed lawina krotkich, natychmiast uniewaznianych zakresow - podnies, jesli wykres nadal jest zatloczony.")
 pinWarnOn   = input.bool(true, "Ostrzegaj o lepkim zakresie (pin opcyjny)", group = g_filter, tooltip = "Market makerzy z dodatnia gamma kupuja kazdy spadek i sprzedaja kazdy wzrost, produkujac waski, dziwnie lepki zakres wokol duzych strike'ow. Na wykresie wyglada jak podrecznikowa faza B, ale nie jest akumulacja i nie konczy sie springiem - rozpuszcza sie po wygasnieciu opcji.")
 pinMaxATR   = input.float(2.0, "Pin: max. wysokosc zakresu (x ATR)", minval = 0.3, maxval = 10, step = 0.1, group = g_filter)
@@ -400,13 +426,12 @@ tfClass = isScalp ? "scalp" : isIntra ? "intraday" : isSwing ? "swing" : "pozycy
 climaxLook   = autoTf ? (isScalp ? 240 : isIntra ? 120 : isSwing ? 60  : 40)   : climaxLookIn
 trendLen     = autoTf ? (isScalp ? 80  : isIntra ? 50  : isSwing ? 40  : 24)   : trendLenIn
 pivLen       = autoTf ? (isScalp ? 4   : isIntra ? 3   : isSwing ? 3   : 2)    : pivLenIn
-consolLen    = autoTf ? (isScalp ? 40  : isIntra ? 28  : isSwing ? 20  : 12)   : consolLenIn
+consolLen    = autoTf ? (isScalp ? 50  : isIntra ? 36  : isSwing ? 30  : 18)   : consolLenIn
 structCool   = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 25  : 10)   : structCoolIn
 maxRangeBars = autoTf ? (isScalp ? 800 : isIntra ? 500 : isSwing ? 300 : 150)  : maxRangeBarsIn
 minCauseBars = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 25  : 12)   : minCauseBarsIn
 strongCauseBars = autoTf ? (isScalp ? 240 : isIntra ? 150 : isSwing ? 90 : 40) : strongCauseBarsIn
 psLookback   = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 30  : 18)   : psLookbackIn
-arMaxBars    = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 30  : 18)   : arMaxBarsIn
 lpsMaxBars   = autoTf ? (isScalp ? 70  : isIntra ? 50  : isSwing ? 40  : 20)   : lpsMaxBarsIn
 testMaxBars  = autoTf ? (isScalp ? 45  : isIntra ? 32  : isSwing ? 25  : 14)   : testMaxBarsIn
 
@@ -446,10 +471,6 @@ closePos = rng > 0 ? (close - low) / rng : 0.5          // 0 = zamkniecie na dni
 rngRank = ta.percentrank(rng, climaxLook)
 volRank = ta.percentrank(vol, climaxLook)
 
-// --- Ekstrema do warunku "klimaks robi nowe ekstremum" -----------------------
-lowestN  = ta.lowest(low,  clxNewExtr)[1]
-highestN = ta.highest(high, clxNewExtr)[1]
-
 // --- Pytanie 1: charakter ruchu PRZED zakresem -------------------------------
 hiTr = ta.highest(high, trendLen)
 loTr = ta.lowest(low,  trendLen)
@@ -465,8 +486,10 @@ er     = erPath > 0 ? erNet / erPath : 0.0
 // konsolidacji rosnie jak sqrt(n), wiec przy auto-dopasowaniu okien oba progi
 // musza byc przeskalowane - inaczej ta sama liczba znaczy co innego na kazdym
 // interwale. Punkt odniesienia to pierwotna para: trendLen 40 i consolLen 20.
+// ER maleje z dlugoscia okna jak 1/sqrt(n), wiec przy auto-dopasowaniu okien
+// prog musi byc przeskalowany. Uzywany juz tylko do sladow PS / PSY - jako
+// brama startu struktury zostal usuniety, bo to on wylaczal caly wskaznik.
 minERe        = autoTf ? minER * math.sqrt(40.0 / trendLen) : minER
-consolMaxATRe = autoTf ? consolMaxATR * math.sqrt(consolLen / 20.0) : consolMaxATR
 
 declATR = atr > 0 ? (hiTr - low)  / atr : 0.0           // ile ATR przecena od szczytu okna
 advATR  = atr > 0 ? (high - loTr) / atr : 0.0           // ile ATR wzrost od dolka okna
@@ -479,35 +502,58 @@ pl = ta.pivotlow(pivLen, pivLen)
 pivBar  = bar_index - pivLen                            // bar, na ktorym pivot faktycznie powstal
 pivVol  = vol[pivLen]                                   // wolumen tamtej swiecy
 
-// --- Konsolidacja bez klimaksu (sciezka re-akumulacji / re-dystrybucji) -----
-chHigh = ta.highest(high, consolLen)
-chLow  = ta.lowest(low,  consolLen)
-chH    = chHigh - chLow
-isTight = atr > 0 and chH <= consolMaxATRe * atr
-// trend PRZED konsolidacja: przesuwamy okno pomiaru o dlugosc konsolidacji
-// ta.lowest/ta.highest licza sie BEZWARUNKOWO, poza ternary - wywolanie funkcji
-// serii wewnatrz galezi warunkowej daje w Pine ciche bledy obliczen.
-loTrPrev    = ta.lowest(low, trendLen)[consolLen]
-hiTrPrev    = ta.highest(high, trendLen)[consolLen]
-advPrevATR  = atr > 0 ? (high[consolLen] - loTrPrev) / atr : 0.0
-declPrevATR = atr > 0 ? (hiTrPrev - low[consolLen]) / atr : 0.0
-preUp   = close[consolLen] > close[consolLen + trendLen] and advPrevATR  >= minLegATR and er[consolLen] >= minERe
-preDown = close[consolLen] < close[consolLen + trendLen] and declPrevATR >= minLegATR and er[consolLen] >= minERe
-// czy w oknie konsolidacji byla swieca klimaksowa (jesli byla, to NIE jest
-// sciezka re-struktury - klimaks ma swoja wlasna, wazniejsza sciezke)
-clxBarFlag    = (rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct)) ? 1.0 : 0.0
-clxInWindow   = ta.highest(clxBarFlag, consolLen) > 0.5
-// Sredni obrot w oknie konsolidacji - przy sciezce bez klimaksu sluzy za
-// referencje dla ST. Swiadomie SREDNIA, nie szczyt: prog liczony od szczytu
-// obrotu spelnia niemal kazdy pivot, wiec ST przestawalby cokolwiek testowac.
-avgVolConsol  = ta.sma(vol, consolLen)
+// =============================================================================
+// DETEKTOR ZAKRESU - podstawowy obiekt wskaznika
+// -----------------------------------------------------------------------------
+// ZMIANA ARCHITEKTURY. Wczesniej struktura rodzila sie z KLIMAKSU (albo z bardzo
+// ciasnej konsolidacji), a klimaks byl koniunkcja pieciu rzadkich warunkow. Efekt
+// byl taki, ze wskaznik milczal: prawdopodobienstwo startu wychodzilo rzedu raz
+// na kilka tysiecy barow.
+//
+// Kolejnosc jest teraz odwrocona i zgodna z tym, jak robia to dzialajace
+// implementacje metody: NAJPIERW ZAKRES, potem klasyfikacja.
+//   1. Zakres to najwyzszy high i najnizszy low z okna, o ile geometria sie
+//      zgadza: nie za waski, nie za szeroki, obie krawedzie faktycznie dotykane.
+//   2. Dopiero POTEM pytamy, co bylo przed nim i czy jest klimaks. To decyduje,
+//      czy nazwiemy go akumulacja, dystrybucja czy kontynuacja - ale NIE decyduje,
+//      czy go w ogole pokazemy.
+// Dzieki temu zaden pojedynczy warunek nie potrafi juz wylaczyc calej detekcji.
+// =============================================================================
+rHigh  = ta.highest(high, consolLen)
+rLow   = ta.lowest(low,  consolLen)
+rHgt   = rHigh - rLow
+rTol   = rHgt * edgeTolPct / 100.0
+// Ile razy cena odwiedzila okolice kazdej krawedzi. Zakres, ktorego krawedzi
+// rynek nie dotyka, jest przypadkowym przedzialem min-max wewnatrz trendu.
+touchHi = math.sum((high >= rHigh - rTol) ? 1.0 : 0.0, consolLen)
+touchLo = math.sum((low  <= rLow  + rTol) ? 1.0 : 0.0, consolLen)
+rangeGeomOk = atr > 0 and rHgt >= minRangeATR * atr and rHgt <= maxRangeATR * atr and touchHi >= minTouch and touchLo >= minTouch
 
-// --- Surowe sygnaly klimaksu -------------------------------------------------
-// SC: najszersza swieca na najwyzszym obrocie, robiaca nowe minimum ruchu,
-//     ale z zamknieciem DALEKO od minimum - panika wchlonieta przez silne rece.
-scRaw = low <= lowestN and rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct) and closePos >= clxClosePos and priorDown
-// BC: lustrzanie - kulminacja euforii na rekordowym obrocie.
-bcRaw = high >= highestN and rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct) and closePos <= 1.0 - clxClosePos and priorUp
+// Skad cena weszla w zakres. To jest pytanie pierwsze metody, ale liczone
+// odpornie: netto ruch na trendLen barach zakonczony tam, gdzie zaczyna sie
+// zakres. Bez Efficiency Ratio, bo ER jako BRAMA wylaczal caly wskaznik -
+// zostaje wylacznie jako skladnik oceny jakosci.
+priorMove = close[consolLen] - close[consolLen + trendLen]
+priorLeg  = atr > 0 ? math.abs(priorMove) / atr : 0.0
+rangeBias = priorLeg >= minLegATR ? (priorMove < 0 ? 1 : -1) : 0
+
+// Klimaks musi byc swieca, ktora WYZNACZYLA krawedz zakresu - inaczej "byl
+// gdzies klimaks w oknie" spelnia sie niemal zawsze i przestaje cokolwiek
+// rozrozniac. SC robi dolna krawedz, BC gorna.
+scBarFlag = (low <= rLow + rTol and rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct) and closePos >= clxClosePos) ? 1.0 : 0.0
+bcBarFlag = (high >= rHigh - rTol and rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct) and closePos <= 1.0 - clxClosePos) ? 1.0 : 0.0
+clxAcc  = ta.highest(scBarFlag, consolLen) > 0.5
+clxDist = ta.highest(bcBarFlag, consolLen) > 0.5
+
+// Pozycje ekstremow zakresu - potrzebne, by etykiety SC / BC / AR stanely na
+// swiecach, ktore te poziomy faktycznie wyznaczyly.
+loOff = -ta.lowestbars(low,  consolLen)
+hiOff = -ta.highestbars(high, consolLen)
+
+// Sredni obrot w oknie - referencja dla ST, gdy zakres nie ma klimaksu.
+// Swiadomie SREDNIA, nie szczyt: prog liczony od szczytu obrotu spelnia niemal
+// kazdy pivot, wiec ST przestawalby cokolwiek testowac.
+avgVolConsol  = ta.sma(vol, consolLen)
 
 // --- Slady PS / PSY (zapamietywane, emitowane dopiero przy klimaksie) -------
 psRaw  = priorDown and (not useVol or vRel >= psVolMult) and closePos >= psClosePos
@@ -539,6 +585,9 @@ type WyStruct
     int    phase    = 0           // 0=A 1=B 2=C 3=D 4=E
     bool   done     = false       // struktura zamknieta - nie przyjmuje juz zdarzen
     bool   weakBrk  = false       // wybicie bez ekspansji zakresu/obrotu
+    float  legATR   = na          // wielkosc nogi wchodzacej w zakres (x ATR)
+    float  erAt     = na          // kierunkowosc tej nogi (Efficiency Ratio)
+    float  touchMin = na          // mniejsza z liczb dotkniec obu krawedzi
     box    bx       = na
     line   lnHi     = na
     line   lnLo     = na
@@ -685,7 +734,6 @@ var float psyPrice    = na
 // klimaks
 var int   clxBar      = na
 var float clxVol      = na
-var float clxPrice    = na
 
 // naruszenie krawedzi (silnik sweep vs akceptacja)
 var int   penDir      = 0        // -1 ponizej dolnej krawedzi, +1 powyzej gornej
@@ -750,66 +798,33 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
         psyPrice := high
 
     // =========================================================================
-    // STAN 0 - BRAK STRUKTURY: szukamy klimaksu, a w drugiej kolejnosci
-    // konsolidacji bez klimaksu (re-akumulacja / re-dystrybucja).
+    // STAN 0 - BRAK STRUKTURY: szukamy ZAKRESU. Jedna sciezka zamiast dwoch.
+    // Zakres powstaje, gdy zgadza sie geometria i wiadomo, skad cena przyszla.
+    // Klimaks decyduje o NAZWIE struktury (odwrocenie vs kontynuacja), a nie
+    // o tym, czy struktura w ogole zaistnieje. To jest sedno przebudowy: zaden
+    // pojedynczy rzadki warunek nie moze juz wylaczyc calej detekcji.
     // =========================================================================
-    if stState == 0 and bar_index - lastEndBar >= structCool
-        if scRaw or bcRaw
-            bias = scRaw ? 1 : -1
-            s = WyStruct.new(sBar = bar_index, bias = bias, climax = true, phase = 0, evLbs = array.new<label>(), evLns = array.new<line>())
-            // krawedz wyznaczona przez klimaks: SC daje dolna, BC gorna
-            if bias > 0
-                s.lo := low
-            else
-                s.hi := high
-            array.push(structs, s)
-            f_capStructs(structs, keepStructs)
-            cur      := s
-            stState  := 1
-            clxBar   := bar_index
-            clxVol   := vol
-            clxPrice := bias > 0 ? low : high
-            // reset licznikow struktury
-            volUpSum := 0.0
-            volDnSum := 0.0
-            peakVRel := 0.0
-            hasShake := false
-            shakeTested := false
-            stCount  := 0
-            lastTestLvl := na
-            penDir   := 0
-            penRetBar := na
-            // PS / PSY - emitowany wstecz, na swojej swiecy
-            if bias > 0 and not na(psBar) and bar_index - psBar <= psLookback and bar_index - psBar >= 2 and showMinor
-                f_event(cur, psBar, psPrice, "PS", colAcc, false, false)
-            if bias < 0 and not na(psyBar) and bar_index - psyBar <= psLookback and bar_index - psyBar >= 2 and showMinor
-                f_event(cur, psyBar, psyPrice, "PSY", colDist, true, false)
-            // klimaks
-            f_event(cur, bar_index, bias > 0 ? low : high, bias > 0 ? "SC" : "BC", f_structCol(bias), bias < 0, true)
-            lastEv    := bias > 0 ? "SC" : "BC"
-            lastEvBar := bar_index
-            if alertClimax
-                alert("OLIK WY | " + (bias > 0 ? "SELLING CLIMAX" : "BUYING CLIMAX") + " @ " + str.tostring(bias > 0 ? low : high, format.mintick) + " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
-
-        else if reStructOn and isTight and not clxInWindow and (preUp or preDown)
-            // Sciezka BEZ klimaksu. Brak swiecy klimaksowej sugeruje reakumulacje
-            // lub redystrybucje w TRWAJACYM trendzie, po ktorej nalezy oczekiwac
-            // KONTYNUACJI, nie odwrocenia - dlatego bias idzie ZGODNIE z trendem.
-            bias = preUp ? 1 : -1
-            s = WyStruct.new(sBar = bar_index - consolLen + 1, hi = chHigh, lo = chLow, bias = bias, climax = false, phase = 1, evLbs = array.new<label>(), evLns = array.new<line>())
-            col = f_structCol(bias)
+    if stState == 0 and bar_index - lastEndBar >= structCool and rangeGeomOk and rangeBias != 0
+        bias   = rangeBias
+        hasClx = bias > 0 ? clxAcc : clxDist
+        if hasClx or reStructOn
+            sBar0 = bar_index - consolLen + 1
+            col   = f_structCol(bias)
+            s = WyStruct.new(sBar = sBar0, hi = rHigh, lo = rLow, bias = bias, climax = hasClx, phase = 1, legATR = priorLeg, erAt = er[consolLen], touchMin = math.min(touchHi, touchLo), evLbs = array.new<label>(), evLns = array.new<line>())
             if showBox
-                s.bx := box.new(s.sBar, s.hi, bar_index, s.lo, xloc = xloc.bar_index, border_color = color.new(col, 55), bgcolor = color.new(col, boxTransp))
+                s.bx := box.new(sBar0, s.hi, bar_index, s.lo, xloc = xloc.bar_index, border_color = color.new(col, 55), bgcolor = color.new(col, boxTransp))
             if showEdges
-                s.lnHi := line.new(s.sBar, s.hi, bar_index, s.hi, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-                s.lnLo := line.new(s.sBar, s.lo, bar_index, s.lo, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-            s.lbTag := f_tagLabel(s.sBar, s.hi, bias, false, col)
+                s.lnHi := line.new(sBar0, s.hi, bar_index, s.hi, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
+                s.lnLo := line.new(sBar0, s.lo, bar_index, s.lo, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
+            s.lbTag := f_tagLabel(sBar0, s.hi, bias, hasClx, col)
             array.push(structs, s)
             f_capStructs(structs, keepStructs)
             cur      := s
             stState  := 2
-            clxVol   := avgVolConsol                 // brak klimaksu -> referencja dla ST to sredni obrot w oknie konsolidacji
-            clxBar   := s.sBar
+            // Swieca, ktora wyznaczyla krawedz tezy, i jej obrot - to jest
+            // referencja dla pozniejszych ST. Bez klimaksu bierzemy srednia.
+            clxBar   := bias > 0 ? bar_index - loOff : bar_index - hiOff
+            clxVol   := hasClx ? (bias > 0 ? vol[loOff] : vol[hiOff]) : avgVolConsol
             volUpSum := 0.0
             volDnSum := 0.0
             peakVRel := 0.0
@@ -819,51 +834,32 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
             lastTestLvl := na
             penDir   := 0
             penRetBar := na
-            lastEv    := bias > 0 ? "RE-AKUM." : "RE-DYSTR."
-            lastEvBar := bar_index
-            f_phaseMark(cur, s.sBar, 1, col)
 
-    // =========================================================================
-    // STAN 1 - FAZA A: klimaks jest, czekamy na AR wyznaczajace druga krawedz.
-    // Wyczerpanie podazy wywoluje Automatic Rally - odbicie BEZ udzialu realnego
-    // popytu, ktorego szczyt wyznacza gorna krawedz przyszlego zakresu.
-    // =========================================================================
-    else if stState == 1 and not na(cur)
-        invalidated = cur.bias > 0 ? low < clxPrice - invalidATR * atr : high > clxPrice + invalidATR * atr
-        arFound = cur.bias > 0 ? (not na(ph) and pivBar > clxBar) : (not na(pl) and pivBar > clxBar)
-        if invalidated or bar_index - clxBar > arMaxBars
-            // klimaks bez AR nie zbudowal zakresu - struktura porzucona
-            // Aktywna struktura jest ZAWSZE ostatnim elementem rejestru (nowa
-            // powstaje wylacznie w stanie 0, a limit N kasuje od poczatku), wiec
-            // wystarczy zdjac ostatni element. Pine nie porownuje obiektow UDT
-            // operatorem ==, wiec nie da sie tego sprawdzic inaczej.
-            f_killStruct(cur)
-            if array.size(structs) > 0
-                array.pop(structs)
-            cur        := na
-            stState    := 0
-            lastEndBar := bar_index
-        else if arFound
-            col = f_structCol(cur.bias)
-            if cur.bias > 0
-                cur.hi := ph
-            else
-                cur.lo := pl
-            cur.phase := 1
-            stState   := 2
-            if showBox
-                cur.bx := box.new(cur.sBar, cur.hi, bar_index, cur.lo, xloc = xloc.bar_index, border_color = color.new(col, 55), bgcolor = color.new(col, boxTransp))
-            if showEdges
-                cur.lnHi := line.new(cur.sBar, cur.hi, bar_index, cur.hi, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-                cur.lnLo := line.new(cur.sBar, cur.lo, bar_index, cur.lo, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-            cur.lbTag := f_tagLabel(cur.sBar, cur.hi, cur.bias, true, col)
-            if showMinor
-                f_event(cur, pivBar, cur.bias > 0 ? ph : pl, "AR", col, cur.bias > 0, false)
-            f_phaseMark(cur, pivBar, 1, col)
-            lastEv    := "AR"
+            // --- etykiety zdarzen, ktore JUZ uksztaltowaly ten zakres --------
+            // Powstaja w momencie potwierdzenia zakresu, na swoich wlasnych
+            // swiecach. To nie jest repainting: etykieta jest tworzona raz i
+            // nigdy sie nie zmienia, a bar i cena, do ktorych sie odnosi, byly
+            // przesadzone, zanim cokolwiek narysowano.
+            if hasClx
+                f_event(cur, clxBar, bias > 0 ? rLow : rHigh, bias > 0 ? "SC" : "BC", col, bias < 0, true)
+                if bias > 0 and not na(psBar) and clxBar - psBar <= psLookback and clxBar - psBar >= 2 and showMinor
+                    f_event(cur, psBar, psPrice, "PS", colAcc, false, false)
+                if bias < 0 and not na(psyBar) and clxBar - psyBar <= psLookback and clxBar - psyBar >= 2 and showMinor
+                    f_event(cur, psyBar, psyPrice, "PSY", colDist, true, false)
+                if alertClimax
+                    alert("OLIK WY | " + (bias > 0 ? "SELLING CLIMAX" : "BUYING CLIMAX") + " @ " + str.tostring(bias > 0 ? rLow : rHigh, format.mintick) + " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+
+            // AR wyznacza krawedz po stronie przeciwnej do klimaksu - ma wiec
+            // sens tylko wtedy, gdy powstalo PO nim.
+            arB = bias > 0 ? bar_index - hiOff : bar_index - loOff
+            if showMinor and arB > clxBar
+                f_event(cur, arB, bias > 0 ? rHigh : rLow, "AR", col, bias > 0, false)
+
+            f_phaseMark(cur, sBar0, 1, col)
+            lastEv    := f_structName(bias, hasClx)
             lastEvBar := bar_index
             if alertRange
-                alert("OLIK WY | ZAKRES USTALONY " + f_structName(cur.bias, true) + " | " + str.tostring(cur.lo, format.mintick) + " - " + str.tostring(cur.hi, format.mintick) + " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+                alert("OLIK WY | ZAKRES " + f_structName(bias, hasClx) + " | " + str.tostring(rLow, format.mintick) + " - " + str.tostring(rHigh, format.mintick) + " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
 
     // =========================================================================
     // STAN 2 - ZAKRES (fazy B i C)
@@ -1245,11 +1241,22 @@ panelW1   = panelWidth * 0.66
 var table panel = na
 var bool panelMerged = false
 if showPanel and barstate.islast
-    hasCur = not na(cur)
+    // Panel opisuje strukture AKTYWNA, a gdy takiej nie ma - OSTATNIA zamknieta.
+    // Wczesniej pokazywal wtedy "brak struktury", co przy normalnym rytmie rynku
+    // zdarzalo sie przez wiekszosc czasu i sprawialo wrazenie, ze wskaznik nie
+    // dziala. Zamkniety zakres nadal niesie informacje: gdzie leza jego krawedzie
+    // i czym sie skonczyl.
+    bool isLive = not na(cur)
+    WyStruct shown = na
+    if isLive
+        shown := cur
+    else if array.size(structs) > 0
+        shown := array.get(structs, array.size(structs) - 1)
+    hasCur = not na(shown)
 
-    // Pola aktywnej struktury przepisujemy do zmiennych lokalnych POD straza
-    // "if hasCur". Siegniecie do pola obiektu, ktory jest na, konczy sie w Pine
-    // bledem wykonania, a operator "and" nie gwarantuje tu short-circuitu.
+    // Pola struktury przepisujemy do zmiennych lokalnych POD straza. Siegniecie
+    // do pola obiektu, ktory jest na, konczy sie w Pine bledem wykonania, a
+    // operator "and" nie gwarantuje tu short-circuitu.
     int   cBias   = 0
     bool  cClimax = false
     int   cPhase  = 0
@@ -1257,22 +1264,30 @@ if showPanel and barstate.islast
     float cLo     = na
     bool  cWeak   = false
     int   cSBar   = na
+    int   cEBar   = na
+    float cLeg    = na
+    float cEr     = na
+    float cTouch  = na
     if hasCur
-        cBias   := cur.bias
-        cClimax := cur.climax
-        cPhase  := cur.phase
-        cHi     := cur.hi
-        cLo     := cur.lo
-        cWeak   := cur.weakBrk
-        cSBar   := cur.sBar
+        cBias   := shown.bias
+        cClimax := shown.climax
+        cPhase  := shown.phase
+        cHi     := shown.hi
+        cLo     := shown.lo
+        cWeak   := shown.weakBrk
+        cSBar   := shown.sBar
+        cEBar   := shown.eBar
+        cLeg    := shown.legATR
+        cEr     := shown.erAt
+        cTouch  := shown.touchMin
 
     hasEdges = hasCur and not na(cHi) and not na(cLo)
 
     // --- struktura i faza -----------------------------------------------------
-    stName  = hasCur ? f_structName(cBias, cClimax) : "brak struktury"
-    stCol   = hasCur ? f_structCol(cBias) : color.gray
-    kindTxt = hasCur ? (cClimax ? " (odwr.)" : " (KONTYN.)") : ""
-    phTxt   = hasCur ? f_phaseName(cPhase) + "  " + f_phaseDesc(cPhase, cBias) : "-"
+    stName  = hasCur ? f_structName(cBias, cClimax) : "skanuje rynek"
+    stCol   = not hasCur ? color.gray : isLive ? f_structCol(cBias) : color.new(f_structCol(cBias), 45)
+    kindTxt = hasCur ? (cClimax ? " odwr." : " kontyn.") : ""
+    phTxt   = not hasCur ? "-" : isLive ? f_phaseName(cPhase) + "  " + f_phaseDesc(cPhase, cBias) : "zamknieta " + (na(cEBar) ? "" : str.tostring(bar_index - cEBar) + " b. temu")
 
     // --- krawedzie ------------------------------------------------------------
     rangeH  = hasEdges ? cHi - cLo : na
@@ -1283,7 +1298,7 @@ if showPanel and barstate.islast
     // Asymetria: szczyty formuja sie dluzej niz dolki, wiec dystrybucja musi
     // zbudowac wieksza przyczyne, zeby zostac uznana za pelnoprawna.
     causeMult = cBias < 0 ? distCauseMult : 1.0
-    causeBars = hasCur and not na(cSBar) ? bar_index - cSBar : na
+    causeBars = not hasCur or na(cSBar) ? na : (isLive or na(cEBar) ? bar_index : cEBar) - cSBar
     causeOk   = not na(causeBars) and causeBars >= minCauseBars * causeMult
     causeBig  = not na(causeBars) and causeBars >= strongCauseBars * causeMult
     causeTxt  = na(causeBars) ? "-" : f_durTxt(causeBars, tfSec) + (causeBig ? "  silna" : causeOk ? "  ok" : "  za mala")
@@ -1301,15 +1316,32 @@ if showPanel and barstate.islast
     // wewnatrz zakresu rozstrzyga przypadki watpliwe.
     effConflict = hasCur and useVol and not na(upPct) and ((cBias > 0 and upPct <= 45) or (cBias < 0 and upPct >= 55))
 
+    // --- OCENA JAKOSCI -------------------------------------------------------
+    // Piec kryteriow zamiast piatki twardych bram. Dzialajace implementacje
+    // metody podaja, ze przy komplecie spelnionych kryteriow szansa na realna
+    // akumulacje to 75-85%, przy jednym niespelnionym 50-60%, a przy dwoch
+    // spada ponizej 40%. Taka skala jest uczciwsza niz zero-jedynkowa decyzja,
+    // bo rynek nie dostarcza podrecznikowych schematow.
+    qLeg   = na(cLeg) ? 0.0 : math.min(cLeg / math.max(minLegATR, 0.1), 2.0) * 10.0
+    qEr    = na(cEr)  ? 0.0 : math.min(cEr  / math.max(minER, 0.01), 1.5) * 12.0
+    qClx   = hasCur and cClimax ? 20.0 : 0.0
+    qCause = na(causeBars) ? 0.0 : math.min(causeBars / math.max(minCauseBars * causeMult, 1.0), 2.0) * 10.0
+    qEff   = not useVol or na(upPct) ? 8.0 : effConflict ? 0.0 : (cBias > 0 and upPct >= 55) or (cBias < 0 and upPct <= 45) ? 15.0 : 8.0
+    qTouch = na(cTouch) ? 0.0 : math.min(cTouch / math.max(minTouch, 1), 2.0) * 6.0
+    qPin   = pinFlag and stState == 2 ? -15.0 : 0.0
+    score  = not hasCur ? na : math.max(0.0, math.min(100.0, qLeg + qEr + qClx + qCause + qEff + qTouch + qPin))
+    scoreTxt = na(score) ? "-" : str.tostring(score, "#") + "/100  " + (score >= 70 ? "dobra" : score >= 45 ? "przecietna" : "slaba")
+    scoreCol = na(score) ? color.gray : score >= 70 ? colAcc : score >= 45 ? color.white : colWarn
+
     // --- ostatnie zdarzenie i oczekiwane nastepne ----------------------------
     agoTxt  = na(lastEvBar) ? "" : "  (" + str.tostring(bar_index - lastEvBar) + " b.)"
     string nextTxt = "-"
-    if stState == 1
-        nextTxt := "AR - druga krawedz"
-    else if stState == 2 and hasEdges
+    if stState == 2 and isLive and hasEdges
         nextTxt := cPhase == 2 ? "TEST, potem " + (cBias > 0 ? "SOS" : "SOW") : cBias > 0 ? "spring lub SOS > " + str.tostring(cHi, format.mintick) : "UTAD lub SOW < " + str.tostring(cLo, format.mintick)
-    else if stState == 3 and hasCur
+    else if stState == 3 and isLive
         nextTxt := cBias > 0 ? "LPS nad krawedzia" : "LPSY pod krawedzia"
+    else if not isLive
+        nextTxt := rangeGeomOk ? "zakres gotowy, czekam na noge" : "nowy zakres"
 
     // --- liczniki -------------------------------------------------------------
     swTxt    = str.tostring(statSweep) + " sweep / " + str.tostring(statAcc) + " akc."
@@ -1341,7 +1373,7 @@ if showPanel and barstate.islast
 
     // --- render ---------------------------------------------------------------
     if na(panel)
-        panel := table.new(f_pos(panelPos), 2, panelFull ? 14 : 8, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+        panel := table.new(f_pos(panelPos), 2, panelFull ? 16 : 9, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
 
     // Naglowek: scalamy DOKLADNIE RAZ, przy tworzeniu tabeli, i nigdy nie piszemy
     // do komorki (1,0). Po scaleniu nalezy ona do obszaru scalonego i kazdy zapis
@@ -1385,6 +1417,10 @@ if showPanel and barstate.islast
         table.cell(panel, 1, r, f_clip(lastEv + agoTxt, 28), text_color = accentCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
         r += 1
 
+    table.cell(panel, 0, r, "Jakosc", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(scoreTxt, 28), text_color = scoreCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
+
     table.cell(panel, 0, r, "Oczekiwane", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
     table.cell(panel, 1, r, f_clip(nextTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
     r += 1
@@ -1402,11 +1438,15 @@ if showPanel and barstate.islast
         table.cell(panel, 1, r, f_clip(volTxt, 28), text_color = volCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
         r += 1
 
-        // Brama "trend przed zakresem" rzadzi obiema sciezkami detekcji, wiec gdy
-        // wskaznik milczy, to niemal zawsze ona. Ten wiersz pokazuje biezaca
-        // wartosc obok progu - zamiast zgadywac, widzisz, ktorego warunku brakuje.
-        table.cell(panel, 0, r, "Brama trendu", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
-        table.cell(panel, 1, r, f_clip("ER " + str.tostring(er, "#.##") + "/" + str.tostring(minERe, "#.##") + "  noga " + str.tostring(math.max(declATR, advATR), "#.#") + "/" + str.tostring(minLegATR, "#.#"), 28), text_color = (er >= minERe and math.max(declATR, advATR) >= minLegATR) ? colAcc : color.gray, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        // Co widzi detektor W TEJ CHWILI. Gdy wskaznik milczy, widac tu dokladnie,
+        // ktorego warunku brakuje: za waski zakres, za szeroki, za malo dotkniec
+        // krawedzi czy brak nogi wchodzacej w zakres.
+        table.cell(panel, 0, r, "Detektor", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(str.tostring(atr > 0 ? rHgt / atr : 0, "#.#") + " ATR (" + str.tostring(minRangeATR, "#.#") + "-" + str.tostring(maxRangeATR, "#.#") + ")  dot. " + str.tostring(math.min(touchHi, touchLo), "#") + "/" + str.tostring(minTouch), 28), text_color = rangeGeomOk ? colAcc : color.gray, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
+
+        table.cell(panel, 0, r, "Noga wejscia", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(str.tostring(priorLeg, "#.#") + "/" + str.tostring(minLegATR, "#.#") + " ATR  " + (rangeBias > 0 ? "z gory (akum.)" : rangeBias < 0 ? "z dolu (dystr.)" : "brak kierunku"), 28), text_color = rangeBias != 0 ? colAcc : color.gray, text_size = panelSize, text_halign = text.align_right, width = panelW1)
         r += 1
 
     table.cell(panel, 0, r, "Uwagi", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
