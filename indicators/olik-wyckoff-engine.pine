@@ -169,7 +169,7 @@
 // setup niz nazwac fazę, ktorej nie ma.
 // =============================================================================
 
-indicator("OLIK Wyckoff Engine", "OLIK WY", overlay = true, max_bars_back = 5000, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+indicator("OLIK Wyckoff Engine", "OLIK Wyckoff Engine", overlay = true, max_bars_back = 5000, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // =============================================================================
 // GRUPY (group=) - ulozone w kolejnosci piciu pytan metody
@@ -398,7 +398,7 @@ tfClass = isScalp ? "scalp" : isIntra ? "intraday" : isSwing ? "swing" : "pozycy
 // Im nizszy interwal, tym wiecej szumu i tym dluzsze musi byc okno, zeby
 // zdarzenie zasluzylo na nazwe. Im wyzszy, tym kazdy bar wazy wiecej.
 climaxLook   = autoTf ? (isScalp ? 240 : isIntra ? 120 : isSwing ? 60  : 40)   : climaxLookIn
-trendLen     = autoTf ? (isScalp ? 120 : isIntra ? 60  : isSwing ? 40  : 24)   : trendLenIn
+trendLen     = autoTf ? (isScalp ? 80  : isIntra ? 50  : isSwing ? 40  : 24)   : trendLenIn
 pivLen       = autoTf ? (isScalp ? 4   : isIntra ? 3   : isSwing ? 3   : 2)    : pivLenIn
 consolLen    = autoTf ? (isScalp ? 40  : isIntra ? 28  : isSwing ? 20  : 12)   : consolLenIn
 structCool   = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 25  : 10)   : structCoolIn
@@ -461,10 +461,17 @@ loTr = ta.lowest(low,  trendLen)
 erNet  = math.abs(close - close[trendLen])
 erPath = math.sum(math.abs(close - close[1]), trendLen)
 er     = erPath > 0 ? erNet / erPath : 0.0
+// Progi zalezne od dlugosci okna. ER maleje z oknem jak 1/sqrt(n), a zakres
+// konsolidacji rosnie jak sqrt(n), wiec przy auto-dopasowaniu okien oba progi
+// musza byc przeskalowane - inaczej ta sama liczba znaczy co innego na kazdym
+// interwale. Punkt odniesienia to pierwotna para: trendLen 40 i consolLen 20.
+minERe        = autoTf ? minER * math.sqrt(40.0 / trendLen) : minER
+consolMaxATRe = autoTf ? consolMaxATR * math.sqrt(consolLen / 20.0) : consolMaxATR
+
 declATR = atr > 0 ? (hiTr - low)  / atr : 0.0           // ile ATR przecena od szczytu okna
 advATR  = atr > 0 ? (high - loTr) / atr : 0.0           // ile ATR wzrost od dolka okna
-priorDown = declATR >= minLegATR and er >= minER and close < close[trendLen]
-priorUp   = advATR  >= minLegATR and er >= minER and close > close[trendLen]
+priorDown = declATR >= minLegATR and er >= minERe and close < close[trendLen]
+priorUp   = advATR  >= minLegATR and er >= minERe and close > close[trendLen]
 
 // --- Pivoty (prawe ramie = opoznienie pivLen barow, ale ZERO repaintu) ------
 ph = ta.pivothigh(pivLen, pivLen)
@@ -476,7 +483,7 @@ pivVol  = vol[pivLen]                                   // wolumen tamtej swiecy
 chHigh = ta.highest(high, consolLen)
 chLow  = ta.lowest(low,  consolLen)
 chH    = chHigh - chLow
-isTight = atr > 0 and chH <= consolMaxATR * atr
+isTight = atr > 0 and chH <= consolMaxATRe * atr
 // trend PRZED konsolidacja: przesuwamy okno pomiaru o dlugosc konsolidacji
 // ta.lowest/ta.highest licza sie BEZWARUNKOWO, poza ternary - wywolanie funkcji
 // serii wewnatrz galezi warunkowej daje w Pine ciche bledy obliczen.
@@ -484,11 +491,12 @@ loTrPrev    = ta.lowest(low, trendLen)[consolLen]
 hiTrPrev    = ta.highest(high, trendLen)[consolLen]
 advPrevATR  = atr > 0 ? (high[consolLen] - loTrPrev) / atr : 0.0
 declPrevATR = atr > 0 ? (hiTrPrev - low[consolLen]) / atr : 0.0
-preUp   = close[consolLen] > close[consolLen + trendLen] and advPrevATR  >= minLegATR and er[consolLen] >= minER
-preDown = close[consolLen] < close[consolLen + trendLen] and declPrevATR >= minLegATR and er[consolLen] >= minER
+preUp   = close[consolLen] > close[consolLen + trendLen] and advPrevATR  >= minLegATR and er[consolLen] >= minERe
+preDown = close[consolLen] < close[consolLen + trendLen] and declPrevATR >= minLegATR and er[consolLen] >= minERe
 // czy w oknie konsolidacji byla swieca klimaksowa (jesli byla, to NIE jest
 // sciezka re-struktury - klimaks ma swoja wlasna, wazniejsza sciezke)
-clxInWindow   = ta.highest(rngRank, consolLen) >= climaxRngPct and (not useVol or ta.highest(volRank, consolLen) >= climaxVolPct)
+clxBarFlag    = (rngRank >= climaxRngPct and (not useVol or volRank >= climaxVolPct)) ? 1.0 : 0.0
+clxInWindow   = ta.highest(clxBarFlag, consolLen) > 0.5
 // Sredni obrot w oknie konsolidacji - przy sciezce bez klimaksu sluzy za
 // referencje dla ST. Swiadomie SREDNIA, nie szczyt: prog liczony od szczytu
 // obrotu spelnia niemal kazdy pivot, wiec ST przestawalby cokolwiek testowac.
@@ -1235,6 +1243,7 @@ panelW0   = panelWidth * 0.34
 panelW1   = panelWidth * 0.66
 
 var table panel = na
+var bool panelMerged = false
 if showPanel and barstate.islast
     hasCur = not na(cur)
 
@@ -1332,11 +1341,18 @@ if showPanel and barstate.islast
 
     // --- render ---------------------------------------------------------------
     if na(panel)
-        panel := table.new(f_pos(panelPos), 2, panelFull ? 13 : 8, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+        panel := table.new(f_pos(panelPos), 2, panelFull ? 14 : 8, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
 
-    table.cell(panel, 0, 0, "OLIK · WYCKOFF · " + timeframe.period + (autoTf ? " · " + tfClass : ""), text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), text_halign = text.align_center, width = panelW0)
-    table.cell(panel, 1, 0, "", text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), width = panelW1)
-    table.merge_cells(panel, 0, 0, 1, 0)
+    // Naglowek: scalamy DOKLADNIE RAZ, przy tworzeniu tabeli, i nigdy nie piszemy
+    // do komorki (1,0). Po scaleniu nalezy ona do obszaru scalonego i kazdy zapis
+    // do niej konczy sie bledem wykonania - a ze panel rysuje sie na kazdym ticku,
+    // blad wracal przy kazdym odswiezeniu i zabijal caly skrypt.
+    if not panelMerged
+        table.cell(panel, 0, 0, "", text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), text_halign = text.align_center)
+        table.cell(panel, 1, 0, "", bgcolor = color.new(accentCol, 85))
+        table.merge_cells(panel, 0, 0, 1, 0)
+        panelMerged := true
+    table.cell_set_text(panel, 0, 0, "OLIK · WYCKOFF · " + timeframe.period + (autoTf ? " · " + tfClass : ""))
 
     int r = 1
     table.cell(panel, 0, r, "Struktura", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
@@ -1384,6 +1400,13 @@ if showPanel and barstate.islast
 
         table.cell(panel, 0, r, "Wolumen", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
         table.cell(panel, 1, r, f_clip(volTxt, 28), text_color = volCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
+
+        // Brama "trend przed zakresem" rzadzi obiema sciezkami detekcji, wiec gdy
+        // wskaznik milczy, to niemal zawsze ona. Ten wiersz pokazuje biezaca
+        // wartosc obok progu - zamiast zgadywac, widzisz, ktorego warunku brakuje.
+        table.cell(panel, 0, r, "Brama trendu", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip("ER " + str.tostring(er, "#.##") + "/" + str.tostring(minERe, "#.##") + "  noga " + str.tostring(math.max(declATR, advATR), "#.#") + "/" + str.tostring(minLegATR, "#.#"), 28), text_color = (er >= minERe and math.max(declATR, advATR) >= minLegATR) ? colAcc : color.gray, text_size = panelSize, text_halign = text.align_right, width = panelW1)
         r += 1
 
     table.cell(panel, 0, r, "Uwagi", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
