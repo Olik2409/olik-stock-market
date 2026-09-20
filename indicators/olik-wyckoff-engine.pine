@@ -22,10 +22,12 @@
 //
 //  2. PRAWO PRZYCZYNY I SKUTKU
 //     "Zakres trwajacy tydzien jest szumem, zakres budowany przez dwa miesiace
-//     jest przyczyna." Silnik mierzy PRZYCZYNE w dniach kalendarzowych (a nie
-//     w barach, zeby wynik nie zalezal od interwalu) i degraduje kazdy setup,
-//     ktory nie zbudowal wystarczajacej przyczyny. Po wybiciu rysuje cele
-//     proporcjonalne do wysokosci zakresu (grupa "Cele").
+//     jest przyczyna." Silnik mierzy PRZYCZYNE W BARACH i degraduje kazdy setup,
+//     ktory nie zbudowal jej dosc. Bary, nie dni kalendarzowe: schemat jest
+//     fraktalny, wiec "dosc dlugi zakres" znaczy to samo na M5 i na D1, a prog
+//     dzienny skazywalby kazdy setup intraday na wieczne "przyczyna za mala".
+//     Panel przelicza bary na czas realny danego interwalu. Po wybiciu silnik
+//     rysuje cele proporcjonalne do wysokosci zakresu (grupa "Cele").
 //
 //  3. PRAWO WYSILKU I REZULTATU
 //     Porownanie wolumenu z postepem ceny. Dwa zastosowania: znaczniki
@@ -63,6 +65,27 @@
 //
 //  PYTANIE 5: czy wstrzas w fazie C spelnia warunki wstrzasu?
 //     Czyli: czy poza krawedzia NIE powstala akceptacja. Patrz nizej.
+//
+// -----------------------------------------------------------------------------
+// JEDEN WSKAZNIK NA WSZYSTKIE INTERWALY (M1 ... W1/M1 miesieczny)
+// -----------------------------------------------------------------------------
+// Schematy Wyckoffa sa fraktalne, wiec wiekszosc logiki jest przenosna bez
+// zmian: wielkosci mierzymy w ATR, obroty w percentylach, czas trwania w barach.
+// Nie przenosza sie jednak OKNA OBSERWACJI. Klimaks ma byc swieca "nienotowana
+// od wielu tygodni" - przy oknie 60 barow to prawda na D1 (trzy miesiace), ale
+// na M5 znaczy tylko "najwieksza tego poranka".
+//
+// Dlatego wskaznik rozpoznaje klase interwalu i sam dobiera okna:
+//
+//   scalp      M1 - M5     okna najdluzsze, bo szum najwiekszy
+//   intraday   M15 - H1
+//   swing      H2 - D1
+//   pozycyjny  W1 - M1     okna najkrotsze, bo kazdy bar wazy najwiecej
+//
+// Skalowane sa: okno klimaksu, okno trendu, ramie pivota, dlugosc konsolidacji,
+// karencja miedzy strukturami, maksymalna dlugosc zakresu, progi przyczyny oraz
+// okna na PS, AR, LPS i Test. Przelacznik "Auto-dopasowanie okien do interwalu"
+// (grupa 1) oddaje pelna kontrole suwakom, gdy chcesz stroic recznie.
 //
 // -----------------------------------------------------------------------------
 // SWEEP vs ZAAKCEPTOWANE WYBICIE - serce wskaznika
@@ -136,6 +159,10 @@
 //     zmienianie lub kasowanie takiej etykiety przy kolejnych tickach.
 //  6. Brak security() na wyzszym interwale dla danych biezacych, brak offsetow
 //     ujemnych, brak calc_on_every_tick-zaleznych skrotow.
+//  7. Anty-nakladanie etykiet przesuwa WYLACZNIE tekst, i tylko raz - w momencie
+//     jego powstania. Bar i cena, do ktorych zdarzenie sie odnosi, pozostaja te
+//     same, wiec rozsuwanie nie zmienia ani jednej tezy wskaznika. Sama pozycja
+//     tekstu nie jest dana o rynku.
 //
 // ZASADA NADRZEDNA (jak w OLIK Session Map): kazdy istotny parametr jest
 // edytowalny w ustawieniach, a defaulty sa konserwatywne - lepiej przegapic
@@ -184,11 +211,11 @@ f_phaseName(int p) =>
 // Krotki opis tego, co dana faza oznacza operacyjnie
 f_phaseDesc(int p, int bias) =>
     desc = switch p
-        0 => bias > 0 ? "zatrzymanie spadku (PS/SC/AR)" : "zatrzymanie wzrostu (PSY/BC/AR)"
-        1 => "budowa przyczyny - oscylacja w zakresie"
-        2 => bias > 0 ? "wstrzas: spring / test" : "wstrzas: UTAD"
-        3 => bias > 0 ? "wybicie SOS - szukaj LPS" : "zalamanie SOW - szukaj LPSY"
-        4 => bias > 0 ? "markup - prowadzenie pozycji" : "markdown - prowadzenie pozycji"
+        0 => bias > 0 ? "zatrzymanie spadku" : "zatrzymanie wzrostu"
+        1 => "budowa przyczyny"
+        2 => bias > 0 ? "wstrzas: spring" : "wstrzas: UTAD"
+        3 => bias > 0 ? "po SOS - szukaj LPS" : "po SOW - szukaj LPSY"
+        4 => bias > 0 ? "markup" : "markdown"
         => "-"
     desc
 
@@ -196,6 +223,10 @@ f_phaseDesc(int p, int bias) =>
 // operacyjnie wazniejsze niz sama nazwa "akumulacja" - patrz pytanie 2.
 f_structName(int bias, bool hasClimax) =>
     bias > 0 ? (hasClimax ? "AKUMULACJA" : "RE-AKUMULACJA") : bias < 0 ? (hasClimax ? "DYSTRYBUCJA" : "RE-DYSTRYBUCJA") : "-"
+
+// Wersja skrocona - na etykiete przy boksie, gdzie liczy sie kazdy znak
+f_shortName(int bias, bool hasClimax) =>
+    bias > 0 ? (hasClimax ? "AKUM" : "RE-AKUM") : bias < 0 ? (hasClimax ? "DYSTR" : "RE-DYSTR") : "-"
 
 // Krok "okraglej liczby" dobierany do rzedu wielkosci instrumentu.
 // Zlecenia stop loss skupiaja sie tuz ZA okraglymi liczbami, wiec blizskosc
@@ -208,9 +239,19 @@ f_roundStep(float price, float manual) =>
 f_distToRound(float price, float step) =>
     step <= 0 ? 1e10 : math.abs(price - math.round(price / step) * step)
 
-// Formatuje liczbe dni przyczyny na czytelny tekst
-f_causeTxt(float days) =>
-    na(days) ? "-" : days >= 60 ? str.tostring(days / 30.0, "#.#") + " mies." : str.tostring(days, "#") + " dni"
+// Formatuje czas trwania (w barach) na czytelny tekst DOPASOWANY DO INTERWALU.
+// Przyczyna mierzona w dniach kalendarzowych jest bezuzyteczna intraday: 20 barow
+// na M15 to 0.2 dnia, wiec kazdy zakres dostawal "0 dni za mala". Mierzymy w
+// barach, a pokazujemy w jednostce, ktora na danym interwale cokolwiek znaczy.
+f_durTxt(int bars, float _tfSec) =>
+    secs = bars * _tfSec
+    txt = secs < 3600 ? str.tostring(secs / 60.0, "#") + " min" : secs < 86400 ? str.tostring(secs / 3600.0, "#.#") + " h" : secs < 86400.0 * 45 ? str.tostring(secs / 86400.0, "#.#") + " dni" : str.tostring(secs / 2592000.0, "#.#") + " mies."
+    txt
+
+// Przycina tekst do zadanej dlugosci - panel ma miec STALA szerokosc,
+// a nie rozjezdzac sie wraz z trescia ostrzezen.
+f_clip(string txt, int maxLen) =>
+    str.length(txt) > maxLen ? str.substring(txt, 0, maxLen - 1) + "~" : txt
 
 
 // =============================================================================
@@ -219,30 +260,30 @@ f_causeTxt(float days) =>
 
 // --- 1. Rdzen / dane ---------------------------------------------------------
 atrLen      = input.int(14,  "ATR - dlugosc", minval = 2, maxval = 200, group = g_core, tooltip = "ATR jest jednostka miary calego wskaznika: wielkosc nogi trendu, szerokosc zakresu, ekspansja swiec i tolerancje krawedzi sa liczone w ATR, dzieki czemu te same defaulty dzialaja na DAX, EURUSD i BTC.")
-pivLen      = input.int(3,   "Pivot - ramie (bary)", minval = 1, maxval = 20, group = g_core, tooltip = "Ile barow po obu stronach musi byc nizszych/wyzszych, zeby uznac ekstremum za pivot. WIEKSZA wartosc = mniej falszywych AR/ST/LPS, ale potwierdzenie przychodzi pozniej. To jest jawny handel czulosc-za-opoznienie; opoznienie jest kosztem metody potwierdzeniowej, nie bledem.")
+pivLenIn    = input.int(3,   "Pivot - ramie (bary)", minval = 1, maxval = 20, group = g_core, tooltip = "Ile barow po obu stronach musi byc nizszych/wyzszych, zeby uznac ekstremum za pivot. WIEKSZA wartosc = mniej falszywych AR/ST/LPS, ale potwierdzenie przychodzi pozniej. To jest jawny handel czulosc-za-opoznienie; opoznienie jest kosztem metody potwierdzeniowej, nie bledem.")
 volSrcMode  = input.string("instrument", "Zrodlo wolumenu", options = ["instrument", "inny symbol (np. CME futures)"], group = g_core, tooltip = "Forex nie ma skonsolidowanego wolumenu - platformy pokazuja wolumen TICKOWY (liczbe zmian ceny), ktory mierzy aktywnosc, a nie wielkosc obrotu. Do wzglednego porownania swiec zwykle wystarcza, ale do rzetelnego stosowania prawa wysilku i rezultatu podepnij wolumen kontraktow z CME.")
 volSymIn    = input.symbol("", "Symbol wolumenu", group = g_core, tooltip = "Dziala tylko przy zrodle 'inny symbol'. Przyklady: dla EURUSD - CME_MINI:M6E1!, dla indeksu US500 - CME_MINI:ES1!, dla zlota - COMEX:GC1!.")
 volFilterOn = input.bool(true, "Uzywaj wolumenu w detekcji", group = g_core, tooltip = "OFF = tryb czysto cenowy (price action). Wskaznik dziala dalej, ale traci trzecie prawo Wyckoffa: klimaks, ST, spring i SOS beda potwierdzane samym zakresem swiec. Wlacz OFF tylko na instrumentach, ktore w ogole nie podaja wolumenu.")
 
 // --- 2. Trend przed zakresem (pytanie 1) -------------------------------------
-trendLen    = input.int(40,  "Okno pomiaru trendu (bary)", minval = 10, maxval = 300, group = g_trend, tooltip = "Na ilu barach wstecz mierzymy ruch poprzedzajacy zakres. Za krotkie okno nazwie schematem zwykla korekte, za dlugie przegapi szybkie odwrocenia.")
+trendLenIn  = input.int(40,  "Okno pomiaru trendu (bary)", minval = 10, maxval = 300, group = g_trend, tooltip = "Na ilu barach wstecz mierzymy ruch poprzedzajacy zakres. Za krotkie okno nazwie schematem zwykla korekte, za dlugie przegapi szybkie odwrocenia.")
 minLegATR   = input.float(4.0, "Min. wielkosc nogi (x ATR)", minval = 0.5, maxval = 30, step = 0.5, group = g_trend, tooltip = "Ile ATR musi miec spadek (do akumulacji) lub wzrost (do dystrybucji) poprzedzajacy zakres. To odsiewa zakresy powstale po plaskim rynku, ktore nie sa schematem Wyckoffa, tylko brakiem informacji.")
 minER       = input.float(0.30, "Min. kierunkowosc (Efficiency Ratio)", minval = 0.0, maxval = 1.0, step = 0.05, group = g_trend, tooltip = "Droga netto podzielona przez sume ruchow jednostkowych. 0.30 oznacza, ze rynek musial faktycznie dokads isc, a nie pilowac. PODNIES, jesli wskaznik lapie zakresy po chaotycznym rynku; OBNIZ na instrumentach bardzo zmiennych.")
 
 // --- 3. Klimaks SC / BC (pytanie 2) ------------------------------------------
-climaxLook  = input.int(60,  "Okno porownania klimaksu (bary)", minval = 20, maxval = 500, group = g_clx, tooltip = "Klimaks ma byc najszersza swieca ruchu na obrocie nienotowanym OD WIELU TYGODNI - to okno definiuje 'wiele tygodni'. Na D1 60 barow to ok. 3 miesiace.")
+climaxLookIn= input.int(60,  "Okno porownania klimaksu (bary)", minval = 20, maxval = 500, group = g_clx, tooltip = "Klimaks ma byc najszersza swieca ruchu na obrocie nienotowanym OD WIELU TYGODNI - to okno definiuje 'wiele tygodni'. Na D1 60 barow to ok. 3 miesiace.")
 climaxRngPct= input.float(95, "Min. percentyl zakresu swiecy", minval = 50, maxval = 100, step = 1, group = g_clx, tooltip = "Jak szeroka na tle okna ma byc swieca klimaksowa. 95 = szersza niz 95% swiec z okna. Obnizenie ponizej 90 zaczyna lapac zwykle swiece impulsowe.")
 climaxVolPct= input.float(95, "Min. percentyl wolumenu", minval = 50, maxval = 100, step = 1, group = g_clx, tooltip = "Analogicznie dla obrotu. Razem z percentylem zakresu tworzy warunek 'najszersza swieca na najwyzszym wolumenie'.")
 clxClosePos = input.float(0.35, "Min. domkniecie od ekstremum (0-1)", minval = 0.0, maxval = 0.5, step = 0.05, group = g_clx, tooltip = "Selling Climax ma zamkniecie DALEKO od minimum, bo panika ostatnich posiadaczy jest wchlaniana przez silne rece. 0.35 = zamkniecie w gornych 65% zakresu swiecy. Buying Climax - lustrzanie. To ten warunek odroznia klimaks od zwyklej swiecy kapitulacyjnej, ktora zamyka sie na dnie.")
 clxNewExtr  = input.int(20,  "Klimaks musi zrobic ekstremum z N barow", minval = 5, maxval = 200, group = g_clx, tooltip = "Klimaks konczy ruch, wiec musi wyznaczyc nowe minimum (SC) lub maksimum (BC) na tle ostatnich N barow. Zabezpiecza przed nazwaniem klimaksem swiecy w srodku konsolidacji.")
 psVolMult   = input.float(1.5, "PS/PSY: min. wolumen (x srednia)", minval = 1.0, maxval = 10, step = 0.1, group = g_clx, tooltip = "Preliminary Support to pierwszy slad: swieca, na ktorej po dlugiej przecenie pojawia sie wyrazny, kupujacy obrot. To jeszcze nie odwrocenie, tylko informacja, ze ktos zaczal zbierac.")
 psClosePos  = input.float(0.55, "PS/PSY: min. domkniecie od ekstremum", minval = 0.0, maxval = 1.0, step = 0.05, group = g_clx, tooltip = "Zamkniecie w gornej czesci swiecy (PS) lub dolnej (PSY) - slad strony przeciwnej do trendu.")
-psLookback  = input.int(30,  "PS/PSY: max. dystans do klimaksu (bary)", minval = 3, maxval = 200, group = g_clx, tooltip = "PS jest oznaczany dopiero w momencie POTWIERDZENIA klimaksu (sam z siebie nie jest sygnalem). Ten parametr mowi, jak daleko wstecz wolno go szukac.")
+psLookbackIn= input.int(30,  "PS/PSY: max. dystans do klimaksu (bary)", minval = 3, maxval = 200, group = g_clx, tooltip = "PS jest oznaczany dopiero w momencie POTWIERDZENIA klimaksu (sam z siebie nie jest sygnalem). Ten parametr mowi, jak daleko wstecz wolno go szukac.")
 
 // --- 4. Zakres i krawedzie (pytanie 3) ---------------------------------------
-arMaxBars   = input.int(30,  "Max. barow na uformowanie AR", minval = 3, maxval = 200, group = g_rng, tooltip = "Automatic Rally (lub Automatic Reaction) musi przyjsc zaraz po klimaksie. Jesli w tym oknie nie powstanie pivot wyznaczajacy druga krawedz, struktura jest porzucana - klimaks bez AR nie zbudowal zakresu.")
+arMaxBarsIn = input.int(30,  "Max. barow na uformowanie AR", minval = 3, maxval = 200, group = g_rng, tooltip = "Automatic Rally (lub Automatic Reaction) musi przyjsc zaraz po klimaksie. Jesli w tym oknie nie powstanie pivot wyznaczajacy druga krawedz, struktura jest porzucana - klimaks bez AR nie zbudowal zakresu.")
 invalidATR  = input.float(0.5, "Uniewaznienie klimaksu (x ATR)", minval = 0.0, maxval = 5, step = 0.1, group = g_rng, tooltip = "O ile cena moze przebic ekstremum klimaksu PRZED uformowaniem AR, zanim uznamy klimaks za nieudany. Mala tolerancja jest potrzebna, bo marginalne przebicia sa normalne.")
-maxRangeBars= input.int(400, "Max. dlugosc zakresu (bary)", minval = 30, maxval = 3000, group = g_rng, tooltip = "Zakres, ktory ciagnie sie bez rozstrzygniecia dluzej niz N barow, przestaje byc przyczyna i staje sie nowym rezimem. Po przekroczeniu struktura jest zamykana jako nierozstrzygnieta.")
+maxRangeBarsIn = input.int(400, "Max. dlugosc zakresu (bary)", minval = 30, maxval = 3000, group = g_rng, tooltip = "Zakres, ktory ciagnie sie bez rozstrzygniecia dluzej niz N barow, przestaje byc przyczyna i staje sie nowym rezimem. Po przekroczeniu struktura jest zamykana jako nierozstrzygnieta.")
 edgeTolPct  = input.float(12, "Tolerancja krawedzi (% wysokosci zakresu)", minval = 1, maxval = 50, step = 1, group = g_rng, tooltip = "Jak blisko krawedzi musi wypasc pivot, zeby uznac go za TEST tej krawedzi (ST, LPS, LPSY). Liczone jako procent wysokosci zakresu, wiec skaluje sie do instrumentu i do samej struktury.")
 
 // --- 5. Wysilek vs rezultat (pytanie 4) --------------------------------------
@@ -262,27 +303,28 @@ expansionATR= input.float(1.0, "Ekspansja: min. zakres swiecy (x ATR)", minval =
 roundOn     = input.bool(true, "Premiuj sweep przy okraglej liczbie", group = g_sweep, tooltip = "Zlecenia take profit skupiaja sie dokladnie na okraglych liczbach, a stop lossy tuz ZA nimi; stopy stanowily w badaniu ksiegi zlecen ponad 40% wszystkich zlecen warunkowych. Ekstremum sweepu wypadajace przy okraglym poziomie to nie przypadek, tylko mechanika. Wplywa wylacznie na ocene jakosci, nie na sama detekcje.")
 roundStepIn = input.float(0, "Krok okraglej liczby (0 = auto)", minval = 0, step = 0.0001, group = g_sweep, tooltip = "0 = dobierany automatycznie do rzedu wielkosci instrumentu. Ustaw recznie, jesli auto nie pasuje (np. 100 dla indeksu, 0.005 dla EURUSD, 1000 dla BTC).")
 roundTolATR = input.float(0.25, "Tolerancja okraglej liczby (x ATR)", minval = 0.01, maxval = 2, step = 0.01, group = g_sweep)
+testMaxBarsIn = input.int(25, "Test po wstrzasie: okno (bary)", minval = 2, maxval = 400, group = g_sweep, tooltip = "Ile barow po springu/UTAD czekamy na potwierdzajacy Test. Brak testu nie uniewaznia wstrzasu - obniza tylko jego ocene, bo poprawny spring jest ZWYKLE potwierdzony testem, ale nie zawsze.")
 
 // --- 7. Faza D / E -----------------------------------------------------------
 sosRngMult  = input.float(1.2, "SOS/SOW: min. zakres swiecy (x ATR)", minval = 0.3, maxval = 5, step = 0.1, group = g_dph, tooltip = "Faze D otwiera pierwszy ruch wychodzacy poza krawedz z EKSPANSJA zakresu i obrotu oraz zamknieciem poza struktura. Bez ekspansji mamy wybicie slabe - wskaznik je oznaczy, ale ostrzeze.")
 sosVolMult  = input.float(1.3, "SOS/SOW: min. wolumen (x srednia)", minval = 1.0, maxval = 10, step = 0.1, group = g_dph)
 reqSosExp   = input.bool(true, "Wymagaj ekspansji do etykiety SOS/SOW", group = g_dph, tooltip = "ON: wybicie bez ekspansji dostaje etykiete ostrzegawcza zamiast SOS/SOW, a panel pokazuje flage 'slabe wybicie'. Struktura i tak przechodzi do fazy D, bo cena opuscila zakres - zmienia sie tylko ocena jakosci.")
-lpsMaxBars  = input.int(40,  "Max. barow na LPS / LPSY", minval = 3, maxval = 300, group = g_dph, tooltip = "Ile barow po SOS/SOW czekamy na cofniecie. Brak LPS w tym oknie zamyka strukture jako nierozstrzygnieta w fazie D.")
+lpsMaxBarsIn= input.int(40,  "Max. barow na LPS / LPSY", minval = 3, maxval = 300, group = g_dph, tooltip = "Ile barow po SOS/SOW czekamy na cofniecie. Brak LPS w tym oknie zamyka strukture jako nierozstrzygnieta w fazie D.")
 lpsTolPct   = input.float(20, "LPS/LPSY: tolerancja wzgledem krawedzi (%)", minval = 0, maxval = 100, step = 5, group = g_dph, tooltip = "LPS to korekta po SOS zatrzymujaca sie NAD dawnym oporem - naturalne miejsce najnizszego ryzyka. Tolerancja pozwala na plytkie zanurzenie ponizej krawedzi, ktore jest normalne. LPSY lustrzanie: slabe odbicie, ktore nie potrafi wrocic do WNETRZA zakresu.")
 failBackPct = input.float(50, "Uniewaznienie fazy D (% powrotu w zakres)", minval = 10, maxval = 100, step = 5, group = g_dph, tooltip = "Jak gleboko po SOS/SOW cena moze wrocic w zakres, zanim uznamy wybicie za nieudane. 50 = powrot do polowy zakresu zamyka strukture i liczy sie jako porazka w statystyce skutecznosci.")
 
 // --- 8. Przyczyna i skutek (cele) --------------------------------------------
-minCauseDays = input.float(10, "Min. przyczyna (dni)", minval = 0, maxval = 400, step = 1, group = g_cause, tooltip = "Zakres trwajacy tydzien jest szumem. Ponizej tego progu setup dostaje flage 'przyczyna za mala' i jest degradowany w ocenie - nie jest kasowany, bo ocena nalezy do tradera, ale nie moze udawac pelnoprawnego schematu.")
-strongCauseDays = input.float(45, "Silna przyczyna (dni)", minval = 1, maxval = 800, step = 1, group = g_cause, tooltip = "Zakres budowany przez dwa miesiace jest przyczyna zdolna wygenerowac wielotygodniowy skutek.")
+minCauseBarsIn = input.int(30, "Min. przyczyna (bary)", minval = 3, maxval = 2000, group = g_cause, tooltip = "Zakres trwajacy tydzien jest szumem, zakres budowany przez dwa miesiace jest przyczyna. Mierzymy to w BARACH, nie w dniach kalendarzowych: na M15 dwadziescia barow to 0.2 dnia, wiec prog dzienny oznaczalby 'przyczyna za mala' na kazdym intraday setupie. Ponizej tego progu setup dostaje flage i jest degradowany w ocenie - nie jest kasowany, bo ocena nalezy do tradera.")
+strongCauseBarsIn = input.int(120, "Silna przyczyna (bary)", minval = 5, maxval = 5000, group = g_cause, tooltip = "Zakres tej dlugosci jest przyczyna zdolna wygenerowac proporcjonalnie duzy skutek. Panel pokazuje obok liczby barow przelicznik na czas realny dopasowany do interwalu.")
 showTargets = input.bool(true, "Rysuj cele po SOS / SOW", group = g_cause, tooltip = "Cele sa PROPORCJONALNE DO WYSOKOSCI ZAKRESU - to praktyczne przyblizenie klasycznego liczenia point-and-figure, a nie samo liczenie P&F. Traktuj je jako skale ruchu, nie jako prognoze.")
 t1Mult      = input.float(1.0, "Cel 1 (x wysokosc zakresu)", minval = 0.2, maxval = 10, step = 0.1, group = g_cause)
 t2Mult      = input.float(2.0, "Cel 2 (x wysokosc zakresu)", minval = 0.2, maxval = 10, step = 0.1, group = g_cause)
 
 // --- 9. Filtry false signals -------------------------------------------------
 reStructOn  = input.bool(true, "Wykrywaj RE-AKUMULACJE / RE-DYSTRYBUCJE", group = g_filter, tooltip = "Zakres BEZ swiecy klimaksowej w trwajacym trendzie sugeruje reakumulacje lub redystrybucje, po ktorej nalezy oczekiwac KONTYNUACJI, nie odwrocenia. Wylaczenie tej opcji ukrywa takie struktury - wtedy wskaznik pokazuje wylacznie schematy odwrocenia.")
-consolLen   = input.int(20,  "Okno detekcji konsolidacji (bary)", minval = 6, maxval = 200, group = g_filter, tooltip = "Dotyczy wylacznie sciezki bez klimaksu. Na ilu barach szukamy ciasnego zakresu.")
+consolLenIn = input.int(20,  "Okno detekcji konsolidacji (bary)", minval = 6, maxval = 200, group = g_filter, tooltip = "Dotyczy wylacznie sciezki bez klimaksu. Na ilu barach szukamy ciasnego zakresu.")
 consolMaxATR= input.float(3.0, "Max. wysokosc konsolidacji (x ATR)", minval = 0.5, maxval = 15, step = 0.1, group = g_filter, tooltip = "Zakres szerszy niz N ATR nie jest konsolidacja, tylko normalna zmiennoscia.")
-structCool  = input.int(15,  "Karencja miedzy strukturami (bary)", minval = 0, maxval = 200, group = g_filter, tooltip = "Minimalny odstep od zamkniecia poprzedniej struktury. Zapobiega laczeniu sie struktur i seryjnym, nakladajacym sie oznaczeniom.")
+structCoolIn= input.int(30,  "Karencja miedzy strukturami (bary)", minval = 0, maxval = 400, group = g_filter, tooltip = "Minimalny odstep od zamkniecia poprzedniej struktury. Zapobiega laczeniu sie struktur i seryjnym, nakladajacym sie oznaczeniom. Na szumie intraday to glowny hamulec przed lawina krotkich, natychmiast uniewaznianych zakresow - podnies, jesli wykres nadal jest zatloczony.")
 pinWarnOn   = input.bool(true, "Ostrzegaj o lepkim zakresie (pin opcyjny)", group = g_filter, tooltip = "Market makerzy z dodatnia gamma kupuja kazdy spadek i sprzedaja kazdy wzrost, produkujac waski, dziwnie lepki zakres wokol duzych strike'ow. Na wykresie wyglada jak podrecznikowa faza B, ale nie jest akumulacja i nie konczy sie springiem - rozpuszcza sie po wygasnieciu opcji.")
 pinMaxATR   = input.float(2.0, "Pin: max. wysokosc zakresu (x ATR)", minval = 0.3, maxval = 10, step = 0.1, group = g_filter)
 pinMaxVol   = input.float(1.5, "Pin: max. szczytowy wolumen (x srednia)", minval = 1.0, maxval = 10, step = 0.1, group = g_filter, tooltip = "Brak jakiegokolwiek skoku obrotu w calym zakresie to dodatkowa przeslanka, ze zakres jest utrzymywany mechanicznie, a nie budowany przez strone przejmujaca papier.")
@@ -298,9 +340,13 @@ edgeStyleIn = input.string("solid", "Krawedzie - styl", options = ["solid", "das
 edgeWidth   = input.int(2,   "Krawedzie - grubosc", minval = 1, maxval = 5, group = g_view)
 extendEdges = input.bool(true, "Przedluzaj krawedzie w prawo", group = g_view, tooltip = "Od momentu ustalenia krawedzi sa to jedyne poziomy majace znaczenie - dlatego domyslnie biegna dalej w prawo takze po zamknieciu struktury.")
 showEvents  = input.bool(true, "Etykiety zdarzen (PS, SC, AR, ST, ...)", group = g_view)
+evOffATR    = input.float(0.45, "Odsuniecie etykiet od swiecy (x ATR)", minval = 0, maxval = 5, step = 0.05, group = g_view, tooltip = "Etykieta nie siedzi na swiecy, tylko nad nia (zdarzenia szczytowe) lub pod nia (dolkowe). Bez tego odsuniecia SOS i LPS zaslaniaja price action dokladnie tam, gdzie jest ona najwazniejsza.")
+lblGapATR   = input.float(0.55, "Min. odstep etykiet (x ATR)", minval = 0, maxval = 5, step = 0.05, group = g_view, tooltip = "Anty-nakladanie. Gdy dwie etykiety wypadna blizej niz ten odstep i w tym samym oknie czasowym, kolejna jest rozsuwana dalej od swiecy. Kotwica (bar i cena zdarzenia) sie NIE zmienia - przesuwa sie wylacznie tekst, wiec odczyt pozostaje ten sam. 0 = wylacz rozsuwanie.")
+deconfBars  = input.int(12, "Okno anty-nakladania (bary)", minval = 1, maxval = 100, group = g_view, tooltip = "Jak daleko w poziomie szukamy kolizji. Etykiety odlegle o wiecej barow nie zachodza na siebie na ekranie, wiec nie ma po co ich rozsuwac.")
+shortTags   = input.bool(true, "Skrocone nazwy przy boksie", group = g_view, tooltip = "AKUM / RE-DYSTR zamiast pelnych nazw. Pelna nazwa i tak stoi w panelu.")
 showMinor   = input.bool(true, "Pokazuj zdarzenia drugorzedne (PS, AR, UT)", group = g_view, tooltip = "OFF zostawia na wykresie wylacznie zdarzenia decyzyjne: klimaks, spring/UTAD, test, SOS/SOW, LPS/LPSY oraz akceptacje wybicia.")
 showPhaseTag= input.bool(true, "Znaczniki faz (A/B/C/D/E)", group = g_view)
-evSizeIn    = input.string("small", "Etykiety - rozmiar", options = ["tiny", "small", "normal"], group = g_view)
+evSizeIn    = input.string("tiny", "Etykiety - rozmiar", options = ["tiny", "small", "normal"], group = g_view)
 colAcc      = input.color(#26A69A, "Kolor akumulacji", group = g_view, inline = "c1")
 colDist     = input.color(#EF5350, "Kolor dystrybucji", group = g_view, inline = "c1")
 colSweep    = input.color(#FFB300, "Kolor sweepu", group = g_view, inline = "c2")
@@ -310,7 +356,9 @@ colWarn     = input.color(#FF7043, "Kolor ostrzezen", group = g_view, inline = "
 // --- 11. Panel ---------------------------------------------------------------
 showPanel   = input.bool(true, "Panel: pokaz", group = g_panel)
 panelPos    = input.string("middle_right", "Pozycja", options = ["top_left", "middle_left", "bottom_left", "top_right", "middle_right", "bottom_right"], group = g_panel)
-panelSizeIn = input.string("small", "Rozmiar tekstu", options = ["tiny", "small", "normal"], group = g_panel)
+panelSizeIn = input.string("tiny", "Rozmiar tekstu", options = ["tiny", "small", "normal"], group = g_panel)
+panelMode   = input.string("kompakt", "Tryb panelu", options = ["kompakt", "pelny"], group = g_panel, tooltip = "Kompakt zostawia 8 wierszy decyzyjnych: co to za struktura, w jakiej jest fazie, gdzie leza krawedzie, czy przyczyna wystarcza, co mowi wysilek, czego oczekiwac i co budzi watpliwosci. Pelny dokłada wysokosc zakresu, ostatnie zdarzenie, liczniki sweep/akceptacja, skutecznosc i zrodlo wolumenu.")
+panelWidth  = input.int(17, "Szerokosc panelu (% wykresu)", minval = 8, maxval = 50, group = g_panel, tooltip = "Panel ma STALA szerokosc - nie rozciaga sie wraz z dlugoscia tekstu. Zbyt dlugie tresci sa przycinane, zamiast rozpychac tabele na pol wykresu.")
 accentCol   = input.color(#00E5FF, "Kolor akcentu", group = g_panel)
 showStats   = input.bool(true, "Wiersz skutecznosci (licznik trafien)", group = g_panel, tooltip = "Schematy sa oczywiste na wykresach historycznych i metne na prawej krawedzi. Jedyna obrona jest nazywanie fazy na biezaco i UCZCIWE LICZENIE TRAFIEN. Ten wiersz liczy springi i UTAD-y, ktore dowiozly SOS/SOW, oraz te, ktore zawiodly - na danych widocznych na wykresie.")
 
@@ -322,6 +370,45 @@ alertTest   = input.bool(true, "Alert: test po wstrzasie", group = g_alert)
 alertSOS    = input.bool(true, "Alert: SOS / SOW", group = g_alert)
 alertLPS    = input.bool(true, "Alert: LPS / LPSY (wejscie)", group = g_alert)
 alertAccept = input.bool(true, "Alert: zaakceptowane wybicie", group = g_alert)
+
+// =============================================================================
+// AUTO-ADAPTACJA DO INTERWALU
+// -----------------------------------------------------------------------------
+// Schematy Wyckoffa sa FRAKTALNE - ta sama sekwencja zdarzen wyglada tak samo na
+// M5 i na W1. Dlatego wiekszosc progow jest juz z natury przenosna: wielkosci
+// mierzymy w ATR, obroty w percentylach, a czas trwania w barach. Nie przenosza
+// sie jednak OKNA OBSERWACJI, bo staly rozmiar okna znaczy co innego na kazdym
+// interwale: 60 barow to trzy miesiace na D1 i pieć godzin na M5. Klimaks ma byc
+// swieca "nienotowana od wielu tygodni", a nie "najwieksza tego poranka".
+//
+// Stad cztery klasy interwalu i osobny zestaw okien dla kazdej. Wszystkie
+// wyrazenia ponizej pozostaja typu 'simple', bo timeframe.in_seconds() jest
+// simple - a tego wymagaja ta.percentrank / ta.highest / ta.pivothigh.
+//
+// Wylaczenie auto oddaje pelna kontrole suwakom z grup 2-9.
+// =============================================================================
+autoTf = input.bool(true, "Auto-dopasowanie okien do interwalu", group = g_core, tooltip = "ON: wskaznik sam dobiera okna obserwacji (klimaks, trend, przyczyna, karencja, pivot) do klasy interwalu - scalping M1-M5, intraday M15-H1, swing H2-D1, pozycyjny W1-M1. OFF: uzywane sa wartosci z suwakow, ktore wtedy dotycza wprost biezacego interwalu.")
+
+tfSec   = timeframe.in_seconds()
+isScalp = tfSec <= 300                              // M1 - M5
+isIntra = tfSec > 300 and tfSec <= 3600             // M15 - H1
+isSwing = tfSec > 3600 and tfSec <= 86400           // H2 - D1
+tfClass = isScalp ? "scalp" : isIntra ? "intraday" : isSwing ? "swing" : "pozycyjny"
+
+// Im nizszy interwal, tym wiecej szumu i tym dluzsze musi byc okno, zeby
+// zdarzenie zasluzylo na nazwe. Im wyzszy, tym kazdy bar wazy wiecej.
+climaxLook   = autoTf ? (isScalp ? 240 : isIntra ? 120 : isSwing ? 60  : 40)   : climaxLookIn
+trendLen     = autoTf ? (isScalp ? 120 : isIntra ? 60  : isSwing ? 40  : 24)   : trendLenIn
+pivLen       = autoTf ? (isScalp ? 4   : isIntra ? 3   : isSwing ? 3   : 2)    : pivLenIn
+consolLen    = autoTf ? (isScalp ? 40  : isIntra ? 28  : isSwing ? 20  : 12)   : consolLenIn
+structCool   = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 25  : 10)   : structCoolIn
+maxRangeBars = autoTf ? (isScalp ? 800 : isIntra ? 500 : isSwing ? 300 : 150)  : maxRangeBarsIn
+minCauseBars = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 25  : 12)   : minCauseBarsIn
+strongCauseBars = autoTf ? (isScalp ? 240 : isIntra ? 150 : isSwing ? 90 : 40) : strongCauseBarsIn
+psLookback   = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 30  : 18)   : psLookbackIn
+arMaxBars    = autoTf ? (isScalp ? 60  : isIntra ? 40  : isSwing ? 30  : 18)   : arMaxBarsIn
+lpsMaxBars   = autoTf ? (isScalp ? 70  : isIntra ? 50  : isSwing ? 40  : 20)   : lpsMaxBarsIn
+testMaxBars  = autoTf ? (isScalp ? 45  : isIntra ? 32  : isSwing ? 25  : 14)   : testMaxBarsIn
 
 // =============================================================================
 // PRZELICZENIE INPUTOW NA STALE
@@ -402,9 +489,10 @@ preDown = close[consolLen] < close[consolLen + trendLen] and declPrevATR >= minL
 // czy w oknie konsolidacji byla swieca klimaksowa (jesli byla, to NIE jest
 // sciezka re-struktury - klimaks ma swoja wlasna, wazniejsza sciezke)
 clxInWindow   = ta.highest(rngRank, consolLen) >= climaxRngPct and (not useVol or ta.highest(volRank, consolLen) >= climaxVolPct)
-// Szczyt obrotu w oknie konsolidacji - przy sciezce bez klimaksu sluzy za
-// referencje dla ST (tam, gdzie nie ma klimaksu, nie ma tez jego wolumenu).
-peakVolConsol = ta.highest(vol, consolLen)
+// Sredni obrot w oknie konsolidacji - przy sciezce bez klimaksu sluzy za
+// referencje dla ST. Swiadomie SREDNIA, nie szczyt: prog liczony od szczytu
+// obrotu spelnia niemal kazdy pivot, wiec ST przestawalby cokolwiek testowac.
+avgVolConsol  = ta.sma(vol, consolLen)
 
 // --- Surowe sygnaly klimaksu -------------------------------------------------
 // SC: najszersza swieca na najwyzszym obrocie, robiaca nowe minimum ruchu,
@@ -435,7 +523,7 @@ warmup = math.max(math.max(climaxLook, trendLen), math.max(volLen, consolLen + t
 // wypadnie poza limit "ostatnie N struktur" - tak samo jak w OLIK Session Map.
 type WyStruct
     int    sBar     = na          // bar startu (klimaks albo start konsolidacji)
-    int    sTime    = na          // czas startu - przyczyna liczona w dniach, nie w barach
+    int    eBar     = na          // bar zamkniecia - do ucinania krawedzi starych struktur
     float  hi       = na          // gorna krawedz: AR (akumulacja) lub BC (dystrybucja)
     float  lo       = na          // dolna krawedz: SC (akumulacja) lub AR (dystrybucja)
     int    bias     = 0           // +1 popyt, -1 podaz
@@ -461,6 +549,38 @@ type WyStruct
 // Kolor struktury wg biasu
 f_structCol(int bias) =>
     bias > 0 ? colAcc : colDist
+
+// --- ANTY-NAKLADANIE ETYKIET -------------------------------------------------
+// Rejestr ostatnio postawionych etykiet: para (bar, y). Nowa etykieta, ktora
+// wypadlaby zbyt blisko juz istniejacej i w tym samym oknie czasowym, jest
+// odsuwana DALEJ OD SWIECY o kolejne odstepy, az znajdzie wolne miejsce.
+//
+// Wazne dla gwarancji braku repaintingu: pozycja jest wyliczana RAZ, w momencie
+// powstania etykiety, i nigdy pozniej nie jest korygowana. Kotwica zdarzenia
+// (bar i cena) pozostaje ta sama - przesuwa sie wylacznie tekst, wiec to, co
+// wskaznik twierdzi o rynku, nie zmienia sie ani o tick.
+var array<int>   lblBars = array.new<int>()
+var array<float> lblYs   = array.new<float>()
+
+f_placeY(int _bar, float _price, float _dir, float _atr) =>
+    y   = _price + _dir * evOffATR * _atr
+    gap = lblGapATR * _atr
+    cnt = array.size(lblBars)
+    if gap > 0 and cnt > 0
+        for _try = 0 to 7
+            bool hit = false
+            for i = 0 to cnt - 1
+                if math.abs(_bar - array.get(lblBars, i)) <= deconfBars and math.abs(y - array.get(lblYs, i)) < gap
+                    hit := true
+            if not hit
+                break
+            y := y + _dir * gap
+    array.push(lblBars, _bar)
+    array.push(lblYs, y)
+    if array.size(lblBars) > 48
+        array.shift(lblBars)
+        array.shift(lblYs)
+    y
 
 // Kasuje strukture w calosci (wszystkie obiekty), uzywane przez limit N
 f_killStruct(WyStruct s) =>
@@ -507,7 +627,8 @@ f_capStructs(array<WyStruct> reg, int n) =>
 // _above = false -> pod swieca (zdarzenia dolkowe).
 f_event(WyStruct s, int _bar, float _price, string _code, color _col, bool _above, bool _major) =>
     if showEvents and not na(s.evLbs)
-        lb = label.new(_bar, _price, _code, xloc = xloc.bar_index, style = _above ? label.style_label_down : label.style_label_up, color = _major ? color.new(_col, 10) : color.new(_col, 100), textcolor = _major ? color.white : _col, size = _major ? evSize : size.tiny)
+        y  = f_placeY(_bar, _price, _above ? 1.0 : -1.0, atr)
+        lb = label.new(_bar, y, _code, xloc = xloc.bar_index, style = _above ? label.style_label_down : label.style_label_up, color = _major ? color.new(_col, 10) : color.new(_col, 100), textcolor = _major ? color.white : _col, size = _major ? evSize : size.tiny)
         array.push(s.evLbs, lb)
 
 // Pionowy znacznik granicy fazy + litera fazy nad zakresem
@@ -515,19 +636,23 @@ f_phaseMark(WyStruct s, int _bar, int _ph, color _col) =>
     if showPhaseTag and not na(s.evLns) and not na(s.evLbs)
         ln = line.new(_bar, s.lo, _bar, s.hi, xloc = xloc.bar_index, color = color.new(_col, 60), style = line.style_dotted, width = 1)
         array.push(s.evLns, ln)
-        lb = label.new(_bar, s.hi, f_phaseName(_ph), xloc = xloc.bar_index, style = label.style_label_down, color = color.new(_col, 75), textcolor = _col, size = size.tiny)
+        // Litera fazy siedzi NAD gorna krawedzia zakresu, nie na swiecy - dzieki
+        // temu nie konkuruje o miejsce z etykietami SOS / LPS / UTAD.
+        y  = f_placeY(_bar, s.hi, 1.0, atr)
+        lb = label.new(_bar, y, f_phaseName(_ph), xloc = xloc.bar_index, style = label.style_label_down, color = color.new(_col, 75), textcolor = _col, size = size.tiny)
         array.push(s.evLbs, lb)
+
+// Etykieta struktury przy boksie. Stawiana nad gorna krawedzia i przepuszczona
+// przez ten sam mechanizm rozsuwania, co zdarzenia.
+f_tagLabel(int _bar, float _hi, int _bias, bool _climax, color _col) =>
+    y = f_placeY(_bar, _hi, 1.0, atr)
+    label.new(_bar, y, shortTags ? f_shortName(_bias, _climax) : f_structName(_bias, _climax), xloc = xloc.bar_index, style = label.style_label_down, color = color.new(_col, 80), textcolor = _col, size = size.tiny)
 
 // Linia celu (przyczyna -> skutek) rysowana po wybiciu
 f_target(int _x1, float _val, color _col, string _txt) =>
     ln = line.new(_x1, _val, bar_index + 10, _val, xloc = xloc.bar_index, color = color.new(_col, 35), style = line.style_dotted, width = 1)
     lb = label.new(bar_index + 10, _val, _txt + " " + str.tostring(_val, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(_col, 85), textcolor = _col, size = size.tiny)
     [ln, lb]
-
-// Okno na Test po wstrzasie. Deklarowane tutaj, bo uzywa go dopiero silnik;
-// w ustawieniach i tak trafia do grupy "Sweep vs akceptacja" (Pine grupuje po
-// parametrze group=, nie po kolejnosci w pliku).
-testMaxBars = input.int(25, "Test po wstrzasie: okno (bary)", minval = 2, maxval = 200, group = g_sweep, tooltip = "Ile barow po springu/UTAD czekamy na potwierdzajacy Test. Brak testu nie uniewaznia wstrzasu - obniza tylko jego ocene, bo poprawny spring jest ZWYKLE potwierdzony testem, ale nie zawsze.")
 
 // =============================================================================
 // STAN SILNIKA
@@ -623,7 +748,7 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
     if stState == 0 and bar_index - lastEndBar >= structCool
         if scRaw or bcRaw
             bias = scRaw ? 1 : -1
-            s = WyStruct.new(sBar = bar_index, sTime = time, bias = bias, climax = true, phase = 0, evLbs = array.new<label>(), evLns = array.new<line>())
+            s = WyStruct.new(sBar = bar_index, bias = bias, climax = true, phase = 0, evLbs = array.new<label>(), evLns = array.new<line>())
             // krawedz wyznaczona przez klimaks: SC daje dolna, BC gorna
             if bias > 0
                 s.lo := low
@@ -663,19 +788,19 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
             // lub redystrybucje w TRWAJACYM trendzie, po ktorej nalezy oczekiwac
             // KONTYNUACJI, nie odwrocenia - dlatego bias idzie ZGODNIE z trendem.
             bias = preUp ? 1 : -1
-            s = WyStruct.new(sBar = bar_index - consolLen + 1, sTime = time[consolLen - 1], hi = chHigh, lo = chLow, bias = bias, climax = false, phase = 1, evLbs = array.new<label>(), evLns = array.new<line>())
+            s = WyStruct.new(sBar = bar_index - consolLen + 1, hi = chHigh, lo = chLow, bias = bias, climax = false, phase = 1, evLbs = array.new<label>(), evLns = array.new<line>())
             col = f_structCol(bias)
             if showBox
                 s.bx := box.new(s.sBar, s.hi, bar_index, s.lo, xloc = xloc.bar_index, border_color = color.new(col, 55), bgcolor = color.new(col, boxTransp))
             if showEdges
                 s.lnHi := line.new(s.sBar, s.hi, bar_index, s.hi, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
                 s.lnLo := line.new(s.sBar, s.lo, bar_index, s.lo, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-            s.lbTag := label.new(s.sBar, s.hi, f_structName(bias, false), xloc = xloc.bar_index, style = label.style_label_down, color = color.new(col, 80), textcolor = col, size = size.tiny)
+            s.lbTag := f_tagLabel(s.sBar, s.hi, bias, false, col)
             array.push(structs, s)
             f_capStructs(structs, keepStructs)
             cur      := s
             stState  := 2
-            clxVol   := peakVolConsol                // brak klimaksu -> referencja dla ST to szczyt obrotu w oknie konsolidacji
+            clxVol   := avgVolConsol                 // brak klimaksu -> referencja dla ST to sredni obrot w oknie konsolidacji
             clxBar   := s.sBar
             volUpSum := 0.0
             volDnSum := 0.0
@@ -723,7 +848,7 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
             if showEdges
                 cur.lnHi := line.new(cur.sBar, cur.hi, bar_index, cur.hi, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
                 cur.lnLo := line.new(cur.sBar, cur.lo, bar_index, cur.lo, xloc = xloc.bar_index, color = color.new(col, 20), style = edgeStyle, width = edgeWidth)
-            cur.lbTag := label.new(cur.sBar, cur.hi, f_structName(cur.bias, true), xloc = xloc.bar_index, style = label.style_label_down, color = color.new(col, 80), textcolor = col, size = size.tiny)
+            cur.lbTag := f_tagLabel(cur.sBar, cur.hi, cur.bias, true, col)
             if showMinor
                 f_event(cur, pivBar, cur.bias > 0 ? ph : pl, "AR", col, cur.bias > 0, false)
             f_phaseMark(cur, pivBar, 1, col)
@@ -859,8 +984,9 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
                         if not na(cur.bx)
                             box.set_right(cur.bx, bar_index)
                         if not na(cur.lbTag)
-                            label.set_text(cur.lbTag, f_structName(cur.bias, cur.climax) + " - UNIEWAZNIONA")
+                            label.set_text(cur.lbTag, (shortTags ? f_shortName(cur.bias, cur.climax) : f_structName(cur.bias, cur.climax)) + " x")
                             label.set_textcolor(cur.lbTag, colAccept)
+                        cur.eBar   := bar_index
                         cur.done   := true
                         cur        := na
                         stState    := 0
@@ -975,8 +1101,9 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
         // --- zakres bez rozstrzygniecia: przestaje byc przyczyna -------------
         if not na(cur) and bar_index - cur.sBar > maxRangeBars
             if not na(cur.lbTag)
-                label.set_text(cur.lbTag, f_structName(cur.bias, cur.climax) + " - BEZ ROZSTRZYGNIECIA")
+                label.set_text(cur.lbTag, (shortTags ? f_shortName(cur.bias, cur.climax) : f_structName(cur.bias, cur.climax)) + " ?")
                 label.set_textcolor(cur.lbTag, colWarn)
+            cur.eBar   := bar_index
             cur.done   := true
             cur        := na
             stState    := 0
@@ -1009,8 +1136,9 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
         if failedBack
             f_event(cur, bar_index, close, "WYBICIE NIEUDANE", colWarn, cur.bias < 0, true)
             if not na(cur.lbTag)
-                label.set_text(cur.lbTag, f_structName(cur.bias, cur.climax) + " - WYBICIE NIEUDANE")
+                label.set_text(cur.lbTag, (shortTags ? f_shortName(cur.bias, cur.climax) : f_structName(cur.bias, cur.climax)) + " !")
                 label.set_textcolor(cur.lbTag, colWarn)
+            cur.eBar := bar_index
             if hasShake
                 statOk  := math.max(statOk - 1, 0)   // cofamy zaliczenie przyznane przy SOS/SOW
                 statFail += 1
@@ -1026,11 +1154,13 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
             code     = cur.bias > 0 ? "LPS" : "LPSY"
             lpsPrice = cur.bias > 0 ? pl : ph
             stName   = f_structName(cur.bias, cur.climax)
+            tagName  = shortTags ? f_shortName(cur.bias, cur.climax) : stName
+            cur.eBar := bar_index
             f_event(cur, pivBar, lpsPrice, code, f_structCol(cur.bias), cur.bias < 0, true)
             f_phaseMark(cur, pivBar, 4, f_structCol(cur.bias))
             cur.phase := 4
             if not na(cur.lbTag)
-                label.set_text(cur.lbTag, stName + " - faza E")
+                label.set_text(cur.lbTag, tagName + " E")
             cur.done   := true
             cur        := na
             stState    := 0
@@ -1042,7 +1172,8 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
         else if bar_index - sosBar > lpsMaxBars
             // brak cofniecia w oknie - struktura zamknieta jako nierozstrzygnieta
             if not na(cur.lbTag)
-                label.set_text(cur.lbTag, f_structName(cur.bias, cur.climax) + " - brak LPS")
+                label.set_text(cur.lbTag, (shortTags ? f_shortName(cur.bias, cur.climax) : f_structName(cur.bias, cur.climax)) + " ?")
+            cur.eBar   := bar_index
             cur.done   := true
             cur        := na
             stState    := 0
@@ -1053,20 +1184,28 @@ if barstate.isconfirmed and bar_index > warmup and not na(atr) and atr > 0
         inRangeNow := false
 
 // =============================================================================
-// PRZEDLUZANIE KRAWEDZI ZAMKNIETYCH STRUKTUR
+// PROWADZENIE KRAWEDZI
 // -----------------------------------------------------------------------------
-// Od momentu wyznaczenia krawedzie sa jedynymi poziomami majacymi znaczenie,
-// wiec po zamknieciu struktury nadal biegna w prawo - dokladnie tak, jak
-// dziala to z poziomami sesyjnymi w OLIK Session Map. Przebieg jest
-// idempotentny: ustawienie extend.right drugi raz nic nie zmienia.
+// "Od tego momentu sa to jedyne poziomy majace znaczenie" dotyczy zakresu
+// BIEZACEGO. Przedluzanie w prawo krawedzi wszystkich pamietanych struktur
+// daje szesc linii przecinajacych caly wykres i zamiast pomagac - zaslania.
+// Dlatego w prawo biegnie wylacznie NAJNOWSZA struktura; starsze sa ucinane
+// na barze, na ktorym zostaly zamkniete.
 // =============================================================================
-if extendEdges and barstate.isconfirmed
-    for s in structs
-        if s.done
-            if not na(s.lnHi)
-                line.set_extend(s.lnHi, extend.right)
-            if not na(s.lnLo)
-                line.set_extend(s.lnLo, extend.right)
+if barstate.isconfirmed
+    cntS = array.size(structs)
+    if cntS > 0
+        for i = 0 to cntS - 1
+            sv = array.get(structs, i)
+            bool newest = i == cntS - 1
+            if not na(sv.lnHi)
+                line.set_extend(sv.lnHi, (newest and extendEdges) ? extend.right : extend.none)
+                if not newest and not na(sv.eBar)
+                    line.set_x2(sv.lnHi, sv.eBar)
+            if not na(sv.lnLo)
+                line.set_extend(sv.lnLo, (newest and extendEdges) ? extend.right : extend.none)
+                if not newest and not na(sv.eBar)
+                    line.set_x2(sv.lnLo, sv.eBar)
 
 // =============================================================================
 // ZNACZNIKI ABSORPCJI (prawo wysilku i rezultatu)
@@ -1083,7 +1222,18 @@ plotshape(absorbPlot, title = "Absorpcja", style = shape.diamond, location = loc
 // decyzja projektowa: schematy Wyckoffa sa oczywiste na wykresach historycznych
 // i metne na prawej krawedzi, a jedyna obrona przed pulapka wstecznosci jest
 // nazywanie fazy przed rozstrzygnieciem i uczciwe liczenie trafien.
+//
+// Panel ma STALA szerokosc (procent wykresu) i przycina zbyt dlugie tresci.
+// Tabela, ktora rozciaga sie wraz z trescia ostrzezen, zabiera pol wykresu
+// dokladnie wtedy, gdy ostrzezen jest duzo - czyli gdy najbardziej trzeba
+// patrzec na cene.
 // =============================================================================
+// Uklad panelu liczymy w zasiegu globalnym - to wartosci 'simple' wynikajace
+// wprost z inputow, a table.new oczekuje ich przy tworzeniu tabeli.
+panelFull = panelMode == "pelny"
+panelW0   = panelWidth * 0.34
+panelW1   = panelWidth * 0.66
+
 var table panel = na
 if showPanel and barstate.islast
     hasCur = not na(cur)
@@ -1097,7 +1247,7 @@ if showPanel and barstate.islast
     float cHi     = na
     float cLo     = na
     bool  cWeak   = false
-    int   cSTime  = na
+    int   cSBar   = na
     if hasCur
         cBias   := cur.bias
         cClimax := cur.climax
@@ -1105,120 +1255,136 @@ if showPanel and barstate.islast
         cHi     := cur.hi
         cLo     := cur.lo
         cWeak   := cur.weakBrk
-        cSTime  := cur.sTime
+        cSBar   := cur.sBar
 
     hasEdges = hasCur and not na(cHi) and not na(cLo)
 
     // --- struktura i faza -----------------------------------------------------
-    stName  = hasCur ? f_structName(cBias, cClimax) : "brak aktywnej struktury"
+    stName  = hasCur ? f_structName(cBias, cClimax) : "brak struktury"
     stCol   = hasCur ? f_structCol(cBias) : color.gray
-    kindTxt = hasCur ? (cClimax ? "odwrocenie" : "KONTYNUACJA") : ""
+    kindTxt = hasCur ? (cClimax ? " (odwr.)" : " (KONTYN.)") : ""
     phTxt   = hasCur ? f_phaseName(cPhase) + "  " + f_phaseDesc(cPhase, cBias) : "-"
 
     // --- krawedzie ------------------------------------------------------------
     rangeH  = hasEdges ? cHi - cLo : na
-    edgeTxt = hasEdges ? str.tostring(cLo, format.mintick) + "  /  " + str.tostring(cHi, format.mintick) : hasCur ? "czekam na AR" : "-"
-    hTxt    = na(rangeH) or atr <= 0 ? "-" : str.tostring(rangeH, format.mintick) + "  (" + str.tostring(rangeH / atr, "#.#") + " ATR)"
+    edgeTxt = hasEdges ? str.tostring(cLo, format.mintick) + " / " + str.tostring(cHi, format.mintick) : hasCur ? "czekam na AR" : "-"
+    hTxt    = na(rangeH) or atr <= 0 ? "-" : str.tostring(rangeH, format.mintick) + " (" + str.tostring(rangeH / atr, "#.#") + " ATR)"
 
-    // --- przyczyna (prawo przyczyny i skutku) --------------------------------
+    // --- przyczyna: BARY, przeliczane na czas realny danego interwalu ---------
     // Asymetria: szczyty formuja sie dluzej niz dolki, wiec dystrybucja musi
     // zbudowac wieksza przyczyne, zeby zostac uznana za pelnoprawna.
     causeMult = cBias < 0 ? distCauseMult : 1.0
-    causeDays = hasCur and not na(cSTime) ? (time - cSTime) / 86400000.0 : na
-    causeReq  = minCauseDays * causeMult
-    causeOk   = not na(causeDays) and causeDays >= causeReq
-    causeBig  = not na(causeDays) and causeDays >= strongCauseDays * causeMult
-    causeTxt  = na(causeDays) ? "-" : f_causeTxt(causeDays) + (causeBig ? "  silna" : causeOk ? "  ok" : "  za mala")
-    causeCol  = na(causeDays) ? color.gray : causeBig ? colAcc : causeOk ? color.white : colWarn
+    causeBars = hasCur and not na(cSBar) ? bar_index - cSBar : na
+    causeOk   = not na(causeBars) and causeBars >= minCauseBars * causeMult
+    causeBig  = not na(causeBars) and causeBars >= strongCauseBars * causeMult
+    causeTxt  = na(causeBars) ? "-" : f_durTxt(causeBars, tfSec) + (causeBig ? "  silna" : causeOk ? "  ok" : "  za mala")
+    causeCol  = na(causeBars) ? color.gray : causeBig ? colAcc : causeOk ? color.white : colWarn
 
     // --- pytanie 4: bilans wysilku -------------------------------------------
-    // Bilans dotyczy WYLACZNIE aktywnego zakresu - po zamknieciu struktury
-    // sumy zostaja w pamieci do czasu powstania nastepnej, wiec bez tej strazy
-    // panel pokazywalby nieaktualna liczbe jako biezacy odczyt.
+    // Bilans dotyczy WYLACZNIE aktywnego zakresu - po zamknieciu struktury sumy
+    // zostaja w pamieci do czasu powstania nastepnej, wiec bez tej strazy panel
+    // pokazywalby nieaktualna liczbe jako biezacy odczyt.
     totV    = volUpSum + volDnSum
     upPct   = hasCur and totV > 0 ? volUpSum / totV * 100.0 : na
-    effTxt  = na(upPct) or not useVol ? "-" : "▲ " + str.tostring(upPct, "#") + "%  /  ▼ " + str.tostring(100 - upPct, "#") + "%  " + (upPct >= 55 ? "popyt" : upPct <= 45 ? "podaz" : "rownowaga")
+    effTxt  = na(upPct) or not useVol ? "-" : "▲" + str.tostring(upPct, "#") + "% ▼" + str.tostring(100 - upPct, "#") + "%  " + (upPct >= 55 ? "popyt" : upPct <= 45 ? "podaz" : "rownowaga")
     effCol  = na(upPct) or not useVol ? color.gray : upPct >= 55 ? colAcc : upPct <= 45 ? colDist : color.white
     // Wysilek sprzeczny z teza jest powaznym ostrzezeniem - to wlasnie obrot
     // wewnatrz zakresu rozstrzyga przypadki watpliwe.
     effConflict = hasCur and useVol and not na(upPct) and ((cBias > 0 and upPct <= 45) or (cBias < 0 and upPct >= 55))
 
     // --- ostatnie zdarzenie i oczekiwane nastepne ----------------------------
-    agoTxt  = na(lastEvBar) ? "" : "  (" + str.tostring(bar_index - lastEvBar) + " barow temu)"
+    agoTxt  = na(lastEvBar) ? "" : "  (" + str.tostring(bar_index - lastEvBar) + " b.)"
     string nextTxt = "-"
     if stState == 1
-        nextTxt := "AR - wyznaczenie drugiej krawedzi"
+        nextTxt := "AR - druga krawedz"
     else if stState == 2 and hasEdges
         nextTxt := cPhase == 2 ? "TEST, potem " + (cBias > 0 ? "SOS" : "SOW") : cBias > 0 ? "spring lub SOS > " + str.tostring(cHi, format.mintick) : "UTAD lub SOW < " + str.tostring(cLo, format.mintick)
     else if stState == 3 and hasCur
-        nextTxt := cBias > 0 ? "LPS - cofniecie nad krawedz" : "LPSY - odbicie pod krawedz"
+        nextTxt := cBias > 0 ? "LPS nad krawedzia" : "LPSY pod krawedzia"
 
     // --- liczniki -------------------------------------------------------------
-    swTxt    = str.tostring(statSweep) + " sweep  /  " + str.tostring(statAcc) + " akceptacja"
+    swTxt    = str.tostring(statSweep) + " sweep / " + str.tostring(statAcc) + " akc."
     resolved = statOk + statFail
-    stTxt    = resolved == 0 ? "brak rozstrzygnietych" : str.tostring(statOk) + " / " + str.tostring(resolved) + "  (" + str.tostring(statOk * 100.0 / resolved, "#") + "%)"
+    stTxt    = resolved == 0 ? "brak danych" : str.tostring(statOk) + "/" + str.tostring(resolved) + " (" + str.tostring(statOk * 100.0 / resolved, "#") + "%)"
     stTxtCol = resolved == 0 ? color.gray : statOk * 2 >= resolved ? colAcc : colWarn
 
     // --- zrodlo wolumenu ------------------------------------------------------
-    volTxt = not hasVol ? "BRAK - tryb cenowy" : volSrcMode == "instrument" ? (tickVolWarn ? "tickowy (forex)" : "instrument") : volSymUse
-    volCol = not hasVol ? colWarn : tickVolWarn ? colWarn : color.white
+    volTxt = not hasVol ? "brak - tryb cenowy" : volSrcMode == "instrument" ? (tickVolWarn ? "tickowy (forex)" : "instrument") : volSymUse
+    volCol = not hasVol or tickVolWarn ? colWarn : color.white
 
-    // --- ostrzezenia ----------------------------------------------------------
+    // --- ostrzezenia: krotkie kody, nie zdania --------------------------------
     string warn = ""
     if pinFlag and stState == 2
-        warn := warn + "lepki zakres (pin opcyjny?); "
-    if hasCur and not na(causeDays) and not causeOk
-        warn := warn + "przyczyna za mala; "
+        warn := warn + "pin?, "
+    if hasCur and not na(causeBars) and not causeOk
+        warn := warn + "przyczyna, "
     if cWeak
-        warn := warn + "wybicie bez ekspansji; "
+        warn := warn + "slabe wyb., "
     if effConflict
-        warn := warn + "wysilek przeczy tezie; "
+        warn := warn + "wysilek!, "
     if hasCur and not cClimax
-        warn := warn + "brak klimaksu: kontynuacja, nie odwrocenie; "
+        warn := warn + "kontynuacja, "
     if tickVolWarn
-        warn := warn + "wolumen tickowy - rozwaz CME; "
+        warn := warn + "tick vol, "
     if not hasVol
-        warn := warn + "brak wolumenu - trzecie prawo wylaczone; "
-    warnTxt = warn == "" ? "brak" : warn
+        warn := warn + "brak vol, "
+    warnTxt = warn == "" ? "brak" : str.substring(warn, 0, str.length(warn) - 2)
 
+    // --- render ---------------------------------------------------------------
     if na(panel)
-        panel := table.new(f_pos(panelPos), 2, 13, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+        panel := table.new(f_pos(panelPos), 2, panelFull ? 13 : 8, frame_color = color.new(accentCol, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
 
-    table.cell(panel, 0, 0, "OLIK · WYCKOFF ENGINE", text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), text_halign = text.align_center)
+    table.cell(panel, 0, 0, "OLIK · WYCKOFF · " + timeframe.period + (autoTf ? " · " + tfClass : ""), text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), text_halign = text.align_center, width = panelW0)
+    table.cell(panel, 1, 0, "", text_color = accentCol, text_size = panelSize, bgcolor = color.new(accentCol, 85), width = panelW1)
     table.merge_cells(panel, 0, 0, 1, 0)
 
-    table.cell(panel, 0, 1, "Struktura", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 1, stName + (kindTxt == "" ? "" : "  (" + kindTxt + ")"), text_color = stCol, text_size = panelSize, text_halign = text.align_right)
+    int r = 1
+    table.cell(panel, 0, r, "Struktura", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(stName + kindTxt, 28), text_color = stCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 2, "Faza", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 2, phTxt, text_color = color.white, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Faza", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(phTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 3, "Krawedzie", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 3, edgeTxt, text_color = color.white, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Krawedzie", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(edgeTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 4, "Wysokosc", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 4, hTxt, text_color = color.white, text_size = panelSize, text_halign = text.align_right)
+    if panelFull
+        table.cell(panel, 0, r, "Wysokosc", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(hTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
 
-    table.cell(panel, 0, 5, "Przyczyna", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 5, causeTxt, text_color = causeCol, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Przyczyna", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(causeTxt, 28), text_color = causeCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 6, "Wysilek", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 6, effTxt, text_color = effCol, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Wysilek", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(effTxt, 28), text_color = effCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 7, "Ostatnie", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 7, lastEv + agoTxt, text_color = accentCol, text_size = panelSize, text_halign = text.align_right)
+    if panelFull
+        table.cell(panel, 0, r, "Ostatnie", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(lastEv + agoTxt, 28), text_color = accentCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
 
-    table.cell(panel, 0, 8, "Oczekiwane", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 8, nextTxt, text_color = color.white, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Oczekiwane", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(nextTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+    r += 1
 
-    table.cell(panel, 0, 9, "Sweep / akc.", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 9, swTxt, text_color = color.white, text_size = panelSize, text_halign = text.align_right)
+    if panelFull
+        table.cell(panel, 0, r, "Sweep / akc.", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(swTxt, 28), text_color = color.white, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
 
-    table.cell(panel, 0, 10, "Skutecznosc", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 10, showStats ? stTxt : "-", text_color = showStats ? stTxtCol : color.gray, text_size = panelSize, text_halign = text.align_right)
+        table.cell(panel, 0, r, "Skutecznosc", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, showStats ? f_clip(stTxt, 28) : "-", text_color = showStats ? stTxtCol : color.gray, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
 
-    table.cell(panel, 0, 11, "Wolumen", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 11, volTxt, text_color = volCol, text_size = panelSize, text_halign = text.align_right)
+        table.cell(panel, 0, r, "Wolumen", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+        table.cell(panel, 1, r, f_clip(volTxt, 28), text_color = volCol, text_size = panelSize, text_halign = text.align_right, width = panelW1)
+        r += 1
 
-    table.cell(panel, 0, 12, "Ostrzezenia", text_color = color.gray, text_size = panelSize, text_halign = text.align_left)
-    table.cell(panel, 1, 12, warnTxt, text_color = warnTxt == "brak" ? color.gray : colWarn, text_size = panelSize, text_halign = text.align_right)
+    table.cell(panel, 0, r, "Uwagi", text_color = color.gray, text_size = panelSize, text_halign = text.align_left, width = panelW0)
+    table.cell(panel, 1, r, f_clip(warnTxt, 30), text_color = warnTxt == "brak" ? color.gray : colWarn, text_size = panelSize, text_halign = text.align_right, width = panelW1)
